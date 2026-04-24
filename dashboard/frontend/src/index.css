@@ -2,36 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Mapbox GL reset — prevents map from overflowing its container */
+/* Mapbox GL — prevents map from overflowing its container */
 .mapboxgl-map {
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
 }
 
-/* Pulsing ring animation for the real-citizen marker */
-@keyframes pulse-ring {
-  0% {
-    transform: scale(0.8);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(2.4);
-    opacity: 0;
-  }
-}
-
-.citizen-pulse-ring {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  border: 2px solid #F39C12;
-  animation: pulse-ring 1.5s ease-out infinite;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-}
-
-/* Mapbox attribution — keep visible but compact */
 .mapboxgl-ctrl-attrib {
   font-size: 10px;
 }
