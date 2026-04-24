@@ -1,12 +1,13 @@
 """
-Route invalidation monitor — THE WOW MOMENT.
+Simulation tick loop — THE core of the demo.
 
-asyncio background task that runs every TICK_INTERVAL_SECONDS.
-For each active citizen route, checks if any segment intersects the updated
-danger polygon. If compromised: recalculates A* from estimated current position
-and pushes the new route via WebSocket broadcast.
-
-No human presses a button. The system detects and fixes broken routes itself.
+Each tick (TICK_INTERVAL_SECONDS wall-clock seconds = 5 sim-minutes):
+  1. Advance hazard physics (fire spread / flood rise / tsunami surge)
+  2. Move each virtual evacuee along their route by 375 m
+  3. Mark citizens who've completed their route as reached_safety
+  4. Detect routes newly compromised by hazard growth → reroute via A*
+  5. Recompute statistics
+  6. Broadcast full state to all connected WebSocket clients (dashboard + evacuees)
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from shapely.geometry import shape
 
@@ -24,17 +25,22 @@ from app.core import pathfinder, safe_zones as sz_selector
 
 logger = logging.getLogger(__name__)
 
-TICK_INTERVAL = int(os.getenv("TICK_INTERVAL_SECONDS", "30"))
+TICK_INTERVAL = int(os.getenv("TICK_INTERVAL_SECONDS", "8"))  # faster for demo
+TICK_SIM_MINUTES = 5.0       # simulated minutes per real-world tick
+WALK_SPEED_MS = 4.5 / 3.6   # 4.5 km/h in m/s
+TICK_ADVANCE_M = WALK_SPEED_MS * TICK_INTERVAL * (TICK_SIM_MINUTES / (TICK_INTERVAL / 60))
+# Simplified: each tick evacuees move 375 m (5 sim-min at walking speed)
+TICK_ADVANCE_M = 375.0
 
 
 async def run_simulation_loop(engine: Any) -> None:
     """
-    Main simulation loop. Advances physics, checks routes, broadcasts state.
-    Runs until the scenario is deactivated or the task is cancelled.
+    Main simulation loop. Runs until scenario is deactivated or task cancelled.
+    Safe to cancel — all state lives on engine, loop is stateless.
     """
     from app.api.websocket import broadcast_state
 
-    logger.info("Simulation loop started")
+    logger.info("Simulation loop started (tick=%ds, sim_min=%.1f)", TICK_INTERVAL, TICK_SIM_MINUTES)
 
     while engine.scenario.active:
         await asyncio.sleep(TICK_INTERVAL)
@@ -42,131 +48,211 @@ async def run_simulation_loop(engine: Any) -> None:
         if not engine.scenario.active:
             break
 
-        # 1. Advance physics by one tick (5 simulated minutes)
-        _advance_physics(engine)
+        # 1. Advance physics
+        engine.advance_physics()
 
-        # 2. Check and fix compromised routes
+        # 2. Move virtual evacuees
+        _advance_citizens(engine)
+
+        # 3. Check / reroute compromised paths
         await _check_routes(engine)
 
-        # 3. Advance simulated time
+        # 4. Advance simulated time
         engine.scenario.tick += 1
-        engine.scenario.elapsed_minutes += 5.0
+        engine.scenario.elapsed_minutes += TICK_SIM_MINUTES
 
-        # 4. Recompute stats
+        # 5. Stats
         engine.recompute_statistics()
 
-        # 5. Push state to all connected dashboards
+        # 6. Broadcast
         await broadcast_state(engine)
+
+        logger.debug(
+            "Tick %d | elapsed %.0f min | evacuating=%d reached=%d reroutes=%d",
+            engine.scenario.tick,
+            engine.scenario.elapsed_minutes,
+            sum(1 for c in engine.citizens.values() if c.status == CitizenStatus.evacuating),
+            sum(1 for c in engine.citizens.values() if c.status == CitizenStatus.reached_safety),
+            engine._routes_recalculated,
+        )
 
     logger.info("Simulation loop stopped")
 
 
-def _advance_physics(engine: Any) -> None:
-    if engine.hazard_event is None:
-        return
+# ------------------------------------------------------------------
+# Move citizens along their routes
+# ------------------------------------------------------------------
 
-    if engine.hazard_event.hazard_type.value == "fire" and engine.fire_simulator:
-        engine.fire_simulator.tick(
-            wind_dir_deg=engine.hazard_event.wind_direction_deg,
-            wind_speed_kmh=engine.hazard_event.wind_speed_kmh,
-        )
-        engine.danger_polygon = engine.fire_simulator.get_danger_geojson()
-        engine.predicted_polygon = engine.fire_simulator.get_predicted_geojson(
-            engine.hazard_event.wind_direction_deg,
-            engine.hazard_event.wind_speed_kmh,
-        )
-        engine.ash_polygon = engine.fire_simulator.get_ash_geojson()
-        engine.fire_front_polygon = engine.fire_simulator.get_fire_front_geojson()
+def _advance_citizens(engine: Any) -> None:
+    """
+    Walk each evacuating citizen 375 m along their planned route.
+    Uses linear interpolation along the GeoJSON LineString coordinates.
+    """
+    for citizen in engine.citizens.values():
+        if citizen.status != CitizenStatus.evacuating:
+            continue
+        if citizen.route_geojson is None:
+            continue
 
-    elif engine.hazard_event.hazard_type.value == "flood" and engine.flood_model:
-        engine.flood_model.advance()
-        engine.danger_polygon = engine.flood_model.get_flood_geojson()
-        engine.predicted_polygon = engine.flood_model.get_predicted_geojson()
+        coords = citizen.route_geojson.get("geometry", {}).get("coordinates", [])
+        if len(coords) < 2:
+            citizen.status = CitizenStatus.reached_safety
+            _update_zone_on_arrival(engine, citizen.assigned_zone_id)
+            continue
 
+        # How far has this citizen already travelled (approximate from position)
+        # We track via a simple heuristic: advance distance and find new position
+        new_pos = _advance_along_path(coords, citizen.lat, citizen.lon, TICK_ADVANCE_M)
+        if new_pos is None:
+            # Reached the end
+            citizen.status = CitizenStatus.reached_safety
+            citizen.lat = coords[-1][1]
+            citizen.lon = coords[-1][0]
+            _update_zone_on_arrival(engine, citizen.assigned_zone_id)
+        else:
+            citizen.lat, citizen.lon = new_pos
+
+        # Also check elapsed time vs route time
+        if (
+            citizen.time_minutes > 0
+            and engine.scenario.elapsed_minutes >= citizen.time_minutes
+        ):
+            citizen.status = CitizenStatus.reached_safety
+            citizen.lat = coords[-1][1]
+            citizen.lon = coords[-1][0]
+            _update_zone_on_arrival(engine, citizen.assigned_zone_id)
+
+
+def _advance_along_path(
+    coords: list,
+    current_lat: float,
+    current_lon: float,
+    advance_m: float,
+) -> Optional[tuple[float, float]]:
+    """
+    Find the position along coords that is advance_m metres ahead of (current_lat, current_lon).
+    Returns None when the end of the path is reached.
+    """
+    # Find closest point on path to current position
+    best_i, best_dist = 0, float("inf")
+    for i, (plon, plat) in enumerate(coords):
+        d = _haversine_m(current_lat, current_lon, plat, plon)
+        if d < best_dist:
+            best_dist = d
+            best_i = i
+
+    # Walk forward advance_m from that segment
+    remaining = advance_m
+    for i in range(best_i, len(coords) - 1):
+        p1 = coords[i]
+        p2 = coords[i + 1]
+        seg_m = _haversine_m(p1[1], p1[0], p2[1], p2[0])
+        if remaining <= seg_m:
+            frac = remaining / max(1.0, seg_m)
+            lon = p1[0] + frac * (p2[0] - p1[0])
+            lat = p1[1] + frac * (p2[1] - p1[1])
+            return lat, lon
+        remaining -= seg_m
+
+    return None  # past the end
+
+
+def _update_zone_on_arrival(engine: Any, zone_id: Optional[str]) -> None:
+    """Shelter occupancy is already set at spawn; just log here."""
+    pass
+
+
+# ------------------------------------------------------------------
+# Route compromise detection + rerouting
+# ------------------------------------------------------------------
 
 async def _check_routes(engine: Any) -> None:
-    """Detect compromised routes; recalculate and push notifications.
-    Also marks citizens as reached_safety once elapsed time exceeds their route time."""
     if engine.danger_polygon is None or engine.graph is None:
         return
 
-    danger_shape = shape(engine.danger_polygon)
+    try:
+        danger_shape = shape(engine.danger_polygon)
+    except Exception:
+        return
+
     citizens_list = list(engine.citizens.values())
 
     for citizen in citizens_list:
         if citizen.status != CitizenStatus.evacuating:
             continue
 
-        # Mark arrived when simulated elapsed time exceeds original route duration
-        if (
-            citizen.time_minutes > 0
-            and engine.scenario.elapsed_minutes >= citizen.time_minutes
-        ):
-            citizen.status = CitizenStatus.reached_safety
-            continue
-
         if not pathfinder.is_route_compromised(engine.graph, citizen.route_geojson, danger_shape):
             continue
 
-        # Route is compromised — find new best zone
         old_destination = citizen.destination_name
 
         new_zone = sz_selector.select_best_zone(
-            citizen.lat,
-            citizen.lon,
+            citizen.lat, citizen.lon,
             engine.safe_zones,
             engine.danger_polygon,
         )
         if new_zone is None:
-            logger.warning("No safe zone available for citizen %s", citizen.citizen_id)
+            logger.warning("No safe zone for citizen %s", citizen.citizen_id)
             continue
 
         new_route = pathfinder.build_route(
-            engine.graph,
-            citizen,
-            new_zone,
-            engine.danger_polygon,
-            engine.predicted_polygon,
+            engine.graph, citizen, new_zone,
+            engine.danger_polygon, engine.predicted_polygon,
             citizens_list,
         )
         if new_route is None:
-            logger.warning("Could not find route for citizen %s", citizen.citizen_id)
+            logger.warning("No route found for citizen %s", citizen.citizen_id)
             continue
 
         dist, time_min = pathfinder.route_distance_and_time(new_route)
 
-        # Decrement old zone occupancy, increment new
-        _update_zone_occupancy(engine, citizen.assigned_zone_id, new_zone.id)
+        # Update zone occupancies
+        _transfer_zone_occupancy(engine, citizen.assigned_zone_id, new_zone.id)
 
-        citizen.route_geojson = new_route
+        citizen.route_geojson    = new_route
         citizen.assigned_zone_id = new_zone.id
         citizen.destination_name = new_zone.name
-        citizen.distance_km = dist
-        citizen.time_minutes = time_min
-        citizen.route_version += 1
+        citizen.distance_km      = dist
+        citizen.time_minutes     = time_min
+        citizen.route_version   += 1
 
         engine.increment_routes_recalculated()
 
-        card = NotificationCard(
-            id=str(uuid.uuid4()),
-            timestamp=time.time(),
+        engine.add_notification(NotificationCard(
             citizen_id=citizen.citizen_id,
-            message=f"Route updated — original path is now inside the danger zone.",
+            message="Route updated — original path blocked by hazard zone.",
             old_destination=old_destination,
             new_destination=new_zone.name,
-        )
-        engine.add_notification(card)
+        ))
+
         logger.info(
-            "Rerouted citizen %s → %s (v%d)",
-            citizen.citizen_id,
-            new_zone.name,
-            citizen.route_version,
+            "Rerouted %s → %s (v%d, %.1f km, %.0f min)",
+            citizen.citizen_id, new_zone.name,
+            citizen.route_version, dist, time_min,
         )
 
 
-def _update_zone_occupancy(engine: Any, old_zone_id: str, new_zone_id: str) -> None:
+def _transfer_zone_occupancy(engine: Any, old_id: Optional[str], new_id: str) -> None:
     for zone in engine.safe_zones:
-        if zone.id == old_zone_id and zone.current_occupancy > 0:
+        if zone.id == old_id and zone.current_occupancy > 0:
             zone.current_occupancy -= 1
-        if zone.id == new_zone_id:
+        if zone.id == new_id:
             zone.current_occupancy += 1
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    import math
+    R = 6_371_000.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return R * 2 * math.asin(max(0.0, a) ** 0.5)

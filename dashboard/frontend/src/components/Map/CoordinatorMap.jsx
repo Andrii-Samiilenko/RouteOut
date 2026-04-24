@@ -374,6 +374,19 @@ export default function CoordinatorMap({
     };
   }, [drawMode, onMapClick, onPolygonComplete]);
 
+  // ── Clear draw vertices when zone is externally reset ─────────────────────
+  useEffect(() => {
+    if (zonePolygon === null) {
+      const map = mapRef.current;
+      vertexMarkersRef.current.forEach((m) => m.remove());
+      vertexMarkersRef.current = [];
+      drawVerticesRef.current = [];
+      if (map && loadedRef.current) {
+        map.getSource('draft-zone')?.setData(EMPTY_FC);
+      }
+    }
+  }, [zonePolygon]);
+
   // ── Data updates on each WS tick ─────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
@@ -401,14 +414,16 @@ export default function CoordinatorMap({
     // Citizens
     map.getSource('citizens')?.setData(wsData?.citizens ?? EMPTY_FC);
 
-    // Safe zones
+    // Safe zones — backend sends as 'safe_zones' (GeoJSON FC)
     map.getSource('safe-zones')?.setData(wsData?.safe_zones ?? EMPTY_FC);
 
     // Draft zone (supervisor drawing)
-    map.getSource('draft-zone')?.setData(zonePolygon ?? EMPTY_FC);
+    if (zonePolygon) {
+      map.getSource('draft-zone')?.setData(zonePolygon);
+    }
 
-    // Active simulation zone from WS
-    const simZone = wsData?.simulation?.zone_polygon;
+    // Active simulation zone from WS (scenario zone polygon)
+    const simZone = wsData?.scenario?.zone_polygon;
     map.getSource('sim-zone')?.setData(simZone ?? EMPTY_FC);
 
     // WS shelter GeoJSON (post-launch)

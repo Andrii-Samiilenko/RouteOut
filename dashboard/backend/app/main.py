@@ -48,6 +48,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 async def health():
     return {
         "status": "ok",
-        "simulation_active": engine.simulation.active,
+        "simulation_active": engine.scenario.active,
+        "disaster_type": engine.scenario.disaster_type,
+        "virtual_evacuees": len(engine.citizens),
         "notification_service_online": engine.notification_service_online,
     }

@@ -4,9 +4,7 @@ import CoordinatorMap from '@/components/Map/CoordinatorMap';
 import MapErrorBoundary from '@/components/Map/MapErrorBoundary';
 import ControlPanel from '@/components/Dashboard/ControlPanel';
 import Statistics from '@/components/Dashboard/Statistics';
-import LLMLog from '@/components/Dashboard/LLMLog';
 import NotificationFeed from '@/components/Dashboard/NotificationFeed';
-import TimeSlider from '@/components/Dashboard/TimeSlider';
 import EvacuationChart from '@/components/Dashboard/EvacuationChart';
 
 /**
@@ -14,87 +12,89 @@ import EvacuationChart from '@/components/Dashboard/EvacuationChart';
  *
  * Layout: full-screen map with a floating glass panel on the right.
  *
- * Responsibilities:
- *   - Flash logic: route_version bump → citizen in flashingCitizens set for 2 s
- *   - History snapshot: appended each WS tick for EvacuationChart
- *   - Draw state: drawMode, pendingShelters, zonePolygon (passed to map + control panel)
- *   - Error toast auto-clear after 5 s
+ * State owned here:
+ *   - Flash detection (route_version bumps → 2 s red flash on map)
+ *   - Chart history snapshots (appended each WS tick)
+ *   - Draw state: drawMode, pendingShelters, zonePolygon, shelterDialog
+ *   - Error toast (auto-cleared after 5 s)
  */
 export default function Coordinator() {
   const { data: wsData, connected } = useWebSocket();
   const [error, setError] = useState(null);
 
-  // ── Chart snapshot ───────────────────────────────────────────────────────
+  // ── Chart history ─────────────────────────────────────────────────────────
   const [chartSnapshot, setChartSnapshot] = useState(null);
 
-  // ── Route flash detection ────────────────────────────────────────────────
+  // ── Route flash detection ─────────────────────────────────────────────────
   const prevVersionsRef = useRef({});
   const [flashingCitizens, setFlashingCitizens] = useState(new Set());
 
   useEffect(() => {
     if (!wsData?.routes?.features) return;
-
     const newlyFlashing = [];
     wsData.routes.features.forEach((f) => {
       const { citizen_id, route_version } = f.properties || {};
       if (citizen_id == null) return;
       const prev = prevVersionsRef.current[citizen_id];
-      if (prev !== undefined && route_version > prev) {
-        newlyFlashing.push(citizen_id);
-      }
+      if (prev !== undefined && route_version > prev) newlyFlashing.push(citizen_id);
       prevVersionsRef.current[citizen_id] = route_version;
     });
-
     if (newlyFlashing.length > 0) {
       setFlashingCitizens((s) => new Set([...s, ...newlyFlashing]));
       const ids = [...newlyFlashing];
       setTimeout(() => {
-        setFlashingCitizens((s) => {
-          const next = new Set(s);
-          ids.forEach((id) => next.delete(id));
-          return next;
-        });
+        setFlashingCitizens((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n; });
       }, 2000);
     }
   }, [wsData]);
 
-  // ── Build chart snapshot each tick ──────────────────────────────────────
+  // ── Chart snapshot each tick ──────────────────────────────────────────────
   useEffect(() => {
     if (!wsData?.scenario?.active) return;
     const stats = wsData.statistics || {};
     const total = (stats.evacuating ?? 0) + (stats.reached_safety ?? 0);
     if (total === 0) return;
     setChartSnapshot({
-      elapsed: Math.round(wsData.scenario.elapsed_minutes ?? 0),
-      reached: stats.reached_safety ?? 0,
+      elapsed:    Math.round(wsData.scenario.elapsed_minutes ?? 0),
+      reached:    stats.reached_safety ?? 0,
       evacuating: stats.evacuating ?? 0,
       total,
     });
   }, [wsData]);
 
-  // ── Error auto-clear ─────────────────────────────────────────────────────
+  // ── Error auto-clear ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!error) return;
     const t = setTimeout(() => setError(null), 5000);
     return () => clearTimeout(t);
   }, [error]);
 
-  // ── Draw state (for supervisor zone/shelter placement) ───────────────────
-  const [drawMode, setDrawMode] = useState(null);          // 'polygon' | 'shelter' | null
-  const [zonePolygon, setZonePolygon] = useState(null);    // GeoJSON Polygon or null
-  const [pendingShelters, setPendingShelters] = useState([]); // ShelterMarker[]
-  const [shelterDialog, setShelterDialog] = useState(null);   // {lat,lon} or null
+  // ── Draw state ────────────────────────────────────────────────────────────
+  const [drawMode, setDrawMode]               = useState(null);
+  const [zonePolygon, setZonePolygon]         = useState(null);
+  const [pendingShelters, setPendingShelters] = useState([]);
+  const [shelterDialog, setShelterDialog]     = useState(null);
 
-  const scenario = wsData?.scenario || {};
-  const stats = wsData?.statistics || {};
-  const simulation = wsData?.simulation || {};
-  const totalCitizens = (wsData?.citizens?.features || []).length;
+  // Called when preset shelters are loaded from backend
+  function handleSheltersLoaded(shelterList) {
+    // Convert backend shelter objects to the same shape as pendingShelters
+    setPendingShelters(shelterList.map((s) => ({
+      id:           s.id,
+      name:         s.name,
+      lat:          s.lat,
+      lon:          s.lon,
+      capacity:     s.capacity,
+      shelter_type: s.shelter_type,
+    })));
+  }
 
   function handleClearDraft() {
     setZonePolygon(null);
     setPendingShelters([]);
     setDrawMode(null);
     setShelterDialog(null);
+    setChartSnapshot(null);
+    prevVersionsRef.current = {};
   }
 
   function handleMapClick({ lat, lon }) {
@@ -111,19 +111,24 @@ export default function Coordinator() {
     setPendingShelters((prev) => [
       ...prev,
       {
-        id: `s-${Date.now()}`,
-        name: name || 'Shelter',
-        lat: shelterDialog.lat,
-        lon: shelterDialog.lon,
-        capacity: Number(capacity),
+        id:           `s-${Date.now()}`,
+        name:         name || 'Shelter',
+        lat:          shelterDialog.lat,
+        lon:          shelterDialog.lon,
+        capacity:     Number(capacity),
         shelter_type,
       },
     ]);
     setShelterDialog(null);
   }
 
+  const scenario    = wsData?.scenario    || {};
+  const stats       = wsData?.statistics  || {};
+  const totalCit    = (wsData?.citizens?.features || []).length;
+  const notifications = wsData?.notifications || [];
+
   return (
-    <div className="relative w-screen h-screen overflow-hidden font-sans">
+    <div className="relative w-screen h-screen overflow-hidden font-sans bg-gray-950">
 
       {/* ── Full-screen map ── */}
       <MapErrorBoundary>
@@ -144,13 +149,25 @@ export default function Coordinator() {
         <span className="text-xs text-gray-300">{connected ? 'Live' : 'Reconnecting…'}</span>
       </div>
 
+      {/* Sim time badge — visible when active */}
+      {scenario.active && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-gray-900/90 backdrop-blur-sm rounded-full px-4 py-1.5 border border-gray-700/60 shadow">
+          <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+          <span className="text-xs text-gray-300 font-medium">
+            T+{Math.round(scenario.elapsed_minutes ?? 0)} min
+          </span>
+          <span className="text-gray-600 text-xs">·</span>
+          <span className="text-xs text-gray-400 capitalize">{scenario.disaster_type}</span>
+        </div>
+      )}
+
       {/* Draw mode hint */}
-      {drawMode && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-gray-900/90 backdrop-blur-sm rounded-full px-4 py-1.5 border border-emerald-700/60 shadow pointer-events-none">
+      {drawMode && !scenario.active && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 bg-gray-900/90 backdrop-blur-sm rounded-full px-4 py-1.5 border border-emerald-700/60 shadow pointer-events-none">
           <span className="text-xs text-emerald-300 font-medium">
             {drawMode === 'polygon'
-              ? 'Click to add vertices — double-click to close the zone'
-              : 'Click anywhere on the map to place a shelter'}
+              ? 'Click to add vertices — double-click to finish the zone'
+              : 'Click on the map to place a shelter'}
           </span>
         </div>
       )}
@@ -162,9 +179,9 @@ export default function Coordinator() {
         </div>
       )}
 
-      {/* ── Safe zone legend (bottom-left) ── */}
+      {/* ── Safe zone legend ── */}
       <div className="absolute bottom-4 left-4 z-20 bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2 border border-gray-700/60 shadow">
-        <p className="text-gray-500 text-[9px] uppercase tracking-widest mb-1.5">Safe Zone Status</p>
+        <p className="text-gray-500 text-[9px] uppercase tracking-widest mb-1.5">Safe Zone Capacity</p>
         <div className="flex flex-col gap-1">
           {[
             { color: 'bg-emerald-500', label: 'Available (<50%)' },
@@ -184,6 +201,7 @@ export default function Coordinator() {
         className="absolute top-4 right-4 bottom-4 z-20 w-[360px] flex flex-col gap-3 overflow-y-auto rounded-2xl bg-gray-900/90 backdrop-blur-md border border-gray-700/50 shadow-2xl p-4"
         style={{ scrollbarWidth: 'thin', scrollbarColor: '#374151 transparent' }}
       >
+        {/* Header */}
         <div className="flex items-center justify-between pb-1 border-b border-gray-700/50">
           <h1 className="text-white font-bold text-lg tracking-tight">
             Route<span className="text-emerald-400">Out</span>
@@ -191,8 +209,9 @@ export default function Coordinator() {
           <span className="text-gray-500 text-xs font-medium uppercase tracking-wider">Supervisor</span>
         </div>
 
+        {/* Control panel */}
         <ControlPanel
-          simulationActive={simulation.active}
+          simulationActive={scenario.active}
           notifOnline={wsData?.notification_service_online ?? false}
           drawMode={drawMode}
           onDrawModeChange={setDrawMode}
@@ -200,24 +219,19 @@ export default function Coordinator() {
           zonePolygon={zonePolygon}
           onClearDraft={handleClearDraft}
           onError={setError}
+          onSheltersLoaded={handleSheltersLoaded}
         />
 
-        {/* Time slider — only visible when scenario is active */}
-        {scenario.active && (
-          <TimeSlider
-            elapsed={Math.round(scenario.elapsed_minutes ?? 0)}
-            disabled={!scenario.active}
-            onError={setError}
-          />
-        )}
+        {/* Statistics — always show, dims when inactive */}
+        <Statistics stats={stats} total={totalCit} active={scenario.active} />
 
-        <Statistics stats={stats} total={totalCitizens} />
-
+        {/* Evacuation progress chart */}
         {chartSnapshot && <EvacuationChart snapshot={chartSnapshot} />}
 
-        {wsData?.llm_log && <LLMLog log={wsData.llm_log} />}
-
-        {wsData?.notifications && <NotificationFeed notifications={wsData.notifications} />}
+        {/* Rerouting event feed */}
+        {notifications.length > 0 && (
+          <NotificationFeed notifications={notifications} />
+        )}
       </div>
 
       {/* Shelter placement dialog */}
@@ -232,8 +246,8 @@ export default function Coordinator() {
 }
 
 function ShelterDialog({ onConfirm, onCancel }) {
-  const [name, setName] = useState('');
-  const [capacity, setCapacity] = useState(200);
+  const [name, setName]           = useState('');
+  const [capacity, setCapacity]   = useState(200);
   const [shelterType, setShelterType] = useState('shelter');
 
   const types = [
@@ -251,8 +265,7 @@ function ShelterDialog({ onConfirm, onCancel }) {
           <div>
             <label className="text-gray-400 text-xs mb-1 block">Name</label>
             <input
-              autoFocus
-              value={name}
+              autoFocus value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Palau Sant Jordi"
               className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
@@ -267,9 +280,7 @@ function ShelterDialog({ onConfirm, onCancel }) {
                   key={value}
                   onClick={() => setShelterType(value)}
                   className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all
-                    ${shelterType === value
-                      ? 'bg-emerald-700 text-white'
-                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                    ${shelterType === value ? 'bg-emerald-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
                 >
                   {label}
                 </button>
@@ -283,7 +294,7 @@ function ShelterDialog({ onConfirm, onCancel }) {
               <span className="text-white text-xs font-semibold">{capacity}</span>
             </div>
             <input
-              type="range" min={50} max={2000} step={50} value={capacity}
+              type="range" min={50} max={5000} step={50} value={capacity}
               onChange={(e) => setCapacity(Number(e.target.value))}
               className="w-full accent-emerald-400"
             />

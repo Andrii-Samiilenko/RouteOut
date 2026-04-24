@@ -73,10 +73,10 @@ def build_route(
         u_data = graph.nodes[u]
         v_data = graph.nodes[v]
         coord_key = (
-            round(u_data.get("x", 0), 4),
-            round(u_data.get("y", 0), 4),
-            round(v_data.get("x", 0), 4),
-            round(v_data.get("y", 0), 4),
+            round(float(u_data.get("x", 0)), 4),
+            round(float(u_data.get("y", 0)), 4),
+            round(float(v_data.get("x", 0)), 4),
+            round(float(v_data.get("y", 0)), 4),
         )
         coord_key_rev = (coord_key[2], coord_key[3], coord_key[0], coord_key[1])
         extra = congested_edges.get(coord_key, 0) + congested_edges.get(coord_key_rev, 0)
@@ -113,18 +113,31 @@ def route_distance_and_time(route_geojson: Dict[str, Any]) -> Tuple[float, float
     return round(dist_km, 2), round(time_min, 1)
 
 
+_node_array_cache: dict = {}  # graph id → (np.ndarray of [[lat,lon],...], node_list)
+
+
 def nearest_node(graph: nx.MultiDiGraph, lat: float, lon: float) -> Optional[int]:
-    """O(n) nearest-node lookup. Good enough for hackathon scale."""
-    best_node = None
-    best_dist = float("inf")
-    for node, data in graph.nodes(data=True):
-        node_lat = data.get("y", 0)
-        node_lon = data.get("x", 0)
-        d = (lat - node_lat) ** 2 + (lon - node_lon) ** 2
-        if d < best_dist:
-            best_dist = d
-            best_node = node
-    return best_node
+    """Vectorised numpy nearest-node lookup. Builds coordinate array once per graph."""
+    import numpy as np
+
+    gid = id(graph)
+    if gid not in _node_array_cache:
+        valid_nodes = []
+        coords = []
+        for node, data in graph.nodes(data=True):
+            try:
+                coords.append([float(data["y"]), float(data["x"])])
+                valid_nodes.append(node)
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not coords:
+            return None
+        _node_array_cache[gid] = (np.array(coords, dtype=np.float64), valid_nodes)
+
+    arr, node_list = _node_array_cache[gid]
+    diffs = arr - np.array([lat, lon])
+    idx = int(np.argmin((diffs ** 2).sum(axis=1)))
+    return node_list[idx]
 
 
 def is_route_compromised(
@@ -156,14 +169,17 @@ def _edge_geometry(
     u_data = graph.nodes[u]
     v_data = graph.nodes[v]
     if "x" in u_data and "x" in v_data:
-        return LineString([(u_data["x"], u_data["y"]), (v_data["x"], v_data["y"])])
+        return LineString([
+            (float(u_data["x"]), float(u_data["y"])),
+            (float(v_data["x"]), float(v_data["y"])),
+        ])
     return None
 
 
 def _node_dist(graph: nx.MultiDiGraph, u: int, v: int) -> float:
     ud, vd = graph.nodes[u], graph.nodes[v]
-    dlat = ud.get("y", 0) - vd.get("y", 0)
-    dlon = ud.get("x", 0) - vd.get("x", 0)
+    dlat = float(ud.get("y", 0)) - float(vd.get("y", 0))
+    dlon = float(ud.get("x", 0)) - float(vd.get("x", 0))
     return math.sqrt(dlat ** 2 + dlon ** 2) * 111_000  # approximate metres
 
 
@@ -192,7 +208,7 @@ def _nodes_to_geojson(graph: nx.MultiDiGraph, nodes: List[int]) -> Dict[str, Any
     coords = []
     for node in nodes:
         data = graph.nodes[node]
-        coords.append([data["x"], data["y"]])
+        coords.append([float(data["x"]), float(data["y"])])
     return {
         "type": "Feature",
         "geometry": {"type": "LineString", "coordinates": coords},
