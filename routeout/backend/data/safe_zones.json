@@ -1,0 +1,52 @@
+[
+  {
+    "id": "sz1",
+    "name": "Parc de la Ciutadella",
+    "lat": 41.3874,
+    "lon": 2.1873,
+    "capacity": 10000,
+    "current_occupancy": 0,
+    "elevation_m": 12,
+    "description": "Large park, well-connected by multiple roads"
+  },
+  {
+    "id": "sz2",
+    "name": "Montjuïc",
+    "lat": 41.3638,
+    "lon": 2.1597,
+    "capacity": 15000,
+    "current_occupancy": 0,
+    "elevation_m": 185,
+    "description": "High elevation, immune to coastal flooding"
+  },
+  {
+    "id": "sz3",
+    "name": "Plaça Catalunya",
+    "lat": 41.3870,
+    "lon": 2.1700,
+    "capacity": 5000,
+    "current_occupancy": 0,
+    "elevation_m": 15,
+    "description": "Central hub with metro access"
+  },
+  {
+    "id": "sz4",
+    "name": "Parc Güell",
+    "lat": 41.4145,
+    "lon": 2.1527,
+    "capacity": 8000,
+    "current_occupancy": 0,
+    "elevation_m": 130,
+    "description": "Elevated, away from coastal hazards"
+  },
+  {
+    "id": "sz5",
+    "name": "Fòrum",
+    "lat": 41.4105,
+    "lon": 2.2264,
+    "capacity": 12000,
+    "current_occupancy": 0,
+    "elevation_m": 5,
+    "description": "Large open area northeast of city"
+  }
+]

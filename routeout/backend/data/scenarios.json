@@ -1,0 +1,60 @@
+{
+  "tibidabo_wildfire": {
+    "id": "tibidabo_wildfire",
+    "display_name": "Tibidabo Wildfire",
+    "hazard_type": "fire",
+    "origin_lat": 41.4380,
+    "origin_lon": 2.1050,
+    "citizen_spawn_bbox": {
+      "lat_min": 41.390,
+      "lat_max": 41.435,
+      "lon_min": 2.110,
+      "lon_max": 2.190
+    },
+    "citizen_count": 30,
+    "inputs": {
+      "aemet": "AVISO ROJO. Incendio forestal activo en Parc de Collserola. Viento NO 25km/h. Temperatura 38°C. Humedad 15%. Riesgo de propagación muy alto hacia zona urbana Sarrià-Gràcia.",
+      "tweet": "Massive fire in Collserola forest, visible from all of Barcelona. Wind pushing flames southeast toward Sarrià fast. #Collserola #Barcelona #incendi",
+      "emergency": "Fire confirmed deep in Collserola Natural Park at 41.438N 2.105E. HIGH spread rate. Dense pine forest fuel load. NW wind 25 km/h driving fire toward Sarrià and Gràcia urban boundary. Evacuation of hillside districts required."
+    },
+    "fallback_hazard_event": {
+      "hazard_type": "fire",
+      "origin_lat": 41.4380,
+      "origin_lon": 2.1050,
+      "wind_direction_deg": 315,
+      "wind_speed_kmh": 2500,
+      "spread_rate": "high",
+      "confidence": 0.91,
+      "sources_count": 3
+    }
+  },
+  "barceloneta_flood": {
+    "id": "barceloneta_flood",
+    "display_name": "Barceloneta Coastal Flood",
+    "hazard_type": "flood",
+    "origin_lat": 41.3800,
+    "origin_lon": 2.1925,
+    "citizen_spawn_bbox": {
+      "lat_min": 41.370,
+      "lat_max": 41.390,
+      "lon_min": 2.175,
+      "lon_max": 2.210
+    },
+    "citizen_count": 30,
+    "inputs": {
+      "aemet": "AVISO ROJO por fenómeno costero. Temporal marítimo severo. Olas de 4-5 metros. Nivel del mar +2.8m sobre marea astronómica. Inundación severa en zonas costeras bajas.",
+      "tweet": "Water rising fast in Barceloneta, ground floor shops flooding. People evacuating toward Ciutadella. #Barcelona #flood #emergencia",
+      "emergency": "Coastal storm surge confirmed. Sea level 2.8m above normal. Barceloneta, Port Vell, and Vila Olímpica below flood threshold. Requesting evacuation of all residents in affected grid squares."
+    },
+    "fallback_hazard_event": {
+      "hazard_type": "flood",
+      "origin_lat": 41.3800,
+      "origin_lon": 2.1925,
+      "wind_direction_deg": 90,
+      "wind_speed_kmh": 60,
+      "spread_rate": "medium",
+      "confidence": 0.88,
+      "sources_count": 3
+    }
+  }
+}

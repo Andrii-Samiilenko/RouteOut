@@ -1,0 +1,54 @@
+[
+  {
+    "id": "vz1",
+    "name": "Tibidabo Forest",
+    "vegetation_factor": 0.9,
+    "description": "Dense Mediterranean pine and oak forest at Tibidabo peak",
+    "polygon": [
+      [2.100, 41.410],
+      [2.140, 41.410],
+      [2.140, 41.440],
+      [2.100, 41.440],
+      [2.100, 41.410]
+    ]
+  },
+  {
+    "id": "vz2",
+    "name": "Collserola Park",
+    "vegetation_factor": 0.85,
+    "description": "Extensive natural park, mixed forest and scrubland",
+    "polygon": [
+      [2.070, 41.380],
+      [2.160, 41.380],
+      [2.160, 41.460],
+      [2.070, 41.460],
+      [2.070, 41.380]
+    ]
+  },
+  {
+    "id": "vz3",
+    "name": "Gràcia District",
+    "vegetation_factor": 0.1,
+    "description": "Dense urban residential area, minimal street-level vegetation",
+    "polygon": [
+      [2.148, 41.398],
+      [2.172, 41.398],
+      [2.172, 41.418],
+      [2.148, 41.418],
+      [2.148, 41.398]
+    ]
+  },
+  {
+    "id": "vz4",
+    "name": "Eixample Grid",
+    "vegetation_factor": 0.05,
+    "description": "Highly urbanised Cerdà grid, almost no vegetation",
+    "polygon": [
+      [2.140, 41.370],
+      [2.195, 41.370],
+      [2.195, 41.405],
+      [2.140, 41.405],
+      [2.140, 41.370]
+    ]
+  }
+]
