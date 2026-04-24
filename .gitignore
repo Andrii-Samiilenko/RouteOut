@@ -44,3 +44,5 @@ build/
 *.graphml
 routeout/backend/data/
 routeout/backend/cache/
+dashboard/backend/data/
+dashboard/backend/cache/
