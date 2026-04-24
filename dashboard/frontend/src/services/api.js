@@ -34,3 +34,9 @@ export function getSimulationState() {
 export function getHealth() {
   return request('/health');
 }
+
+// Simulation advances server-side on a tick timer; this is a no-op kept for
+// TimeSlider compatibility (it has no backend equivalent).
+export function advanceScenario() {
+  return Promise.resolve({ status: 'ok' });
+}
