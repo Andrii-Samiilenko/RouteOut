@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
+import SafeZoneDetail from '@/components/Dashboard/SafeZoneDetail';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN || '';
 
@@ -19,22 +20,34 @@ function toFC(geo) {
  * CoordinatorMap — city-wide dark Mapbox map.
  *
  * Layer stack (bottom → top):
- *   ash-fill          burned-out charcoal area
+ *   ash-fill          charcoal burned-out area
  *   danger-outline    red perimeter (combined ash + fire front)
  *   fire-front-fill   bright orange active fire
  *   fire-front-glow   yellow outline glow
  *   predicted-outline dashed amber 15-min forecast
  *   routes-shadow     thin dark pass under routes
  *   routes-line       green evacuation routes (red flash on reroute)
- *   citizens-circle   amber dots (evacuating) / green dots (safe)
- *   citizens-real     judge's dot with pulsing DOM marker
- *   safe-zones        green circles + labels
+ *   safe-zones-fill   circles scaled by capacity, colored by utilisation
+ *   safe-zones-border ring border
+ *   safe-zones-label  zone name label
+ *   citizens-circle   amber dots (evacuating) / green (safe)
+ *   citizens-real     judge's dot — DOM pulsing ring marker
+ *
+ * Safe zone color:
+ *   utilisation < 50%  → green  (#27AE60)
+ *   utilisation 50–80% → amber  (#F39C12)
+ *   utilisation > 80%  → red    (#E74C3C)
+ *
+ * Safe zone radius scales linearly from capacity 1 000 → 5 000 (px 12 → 28).
  */
 export default function CoordinatorMap({ wsData, flashingSet }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const loadedRef = useRef(false);
   const realMarkerRef = useRef(null);
+
+  // Safe zone click popup state
+  const [clickedZone, setClickedZone] = useState(null); // { props, screenX, screenY }
 
   useEffect(() => {
     const map = new mapboxgl.Map({
@@ -47,6 +60,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
     mapRef.current = map;
 
     map.on('load', () => {
+      // ── Sources ─────────────────────────────────────────────────────────
       map.addSource('ash',        { type: 'geojson', data: EMPTY_FC });
       map.addSource('danger',     { type: 'geojson', data: EMPTY_FC });
       map.addSource('fire-front', { type: 'geojson', data: EMPTY_FC });
@@ -55,7 +69,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
       map.addSource('citizens',   { type: 'geojson', data: EMPTY_FC });
       map.addSource('safe-zones', { type: 'geojson', data: EMPTY_FC });
 
-      // Ash — charcoal burned-out area
+      // ── Ash ─────────────────────────────────────────────────────────────
       map.addLayer({
         id: 'ash-fill',
         type: 'fill',
@@ -63,7 +77,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         paint: { 'fill-color': '#1a0d00', 'fill-opacity': 0.72 },
       });
 
-      // Danger perimeter
+      // ── Danger perimeter ────────────────────────────────────────────────
       map.addLayer({
         id: 'danger-outline',
         type: 'line',
@@ -71,7 +85,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         paint: { 'line-color': '#C0392B', 'line-width': 1.5, 'line-opacity': 0.7 },
       });
 
-      // Active fire front
+      // ── Active fire front ────────────────────────────────────────────────
       map.addLayer({
         id: 'fire-front-fill',
         type: 'fill',
@@ -85,7 +99,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         paint: { 'line-color': '#FFD700', 'line-width': 2.5, 'line-opacity': 0.9 },
       });
 
-      // Predicted zone — dashed amber
+      // ── Predicted zone ───────────────────────────────────────────────────
       map.addLayer({
         id: 'predicted-outline',
         type: 'line',
@@ -98,14 +112,13 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         },
       });
 
-      // Routes — shadow pass
+      // ── Routes ───────────────────────────────────────────────────────────
       map.addLayer({
         id: 'routes-shadow',
         type: 'line',
         source: 'routes',
         paint: { 'line-color': '#000', 'line-width': 4, 'line-opacity': 0.3 },
       });
-      // Routes — green normally, red when flashing
       map.addLayer({
         id: 'routes-line',
         type: 'line',
@@ -121,7 +134,79 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         },
       });
 
-      // Simulated citizen dots
+      // ── Safe zones — fill circle (capacity-scaled radius, utilisation color) ──
+      map.addLayer({
+        id: 'safe-zones-fill',
+        type: 'circle',
+        source: 'safe-zones',
+        paint: {
+          // Radius scales with capacity: 5 000 → 14 px, 15 000 → 28 px
+          'circle-radius': [
+            'interpolate', ['linear'], ['get', 'capacity'],
+            1000, 12,
+            5000, 16,
+            10000, 22,
+            15000, 28,
+          ],
+          // Fill color by utilisation level
+          'circle-color': [
+            'case',
+            ['>=', ['get', 'utilisation'], 0.8], '#E74C3C',  // red — near full
+            ['>=', ['get', 'utilisation'], 0.5], '#F39C12',  // amber — filling
+            '#27AE60',                                         // green — safe
+          ],
+          // Opacity increases as zone fills up (makes danger visible)
+          'circle-opacity': [
+            'interpolate', ['linear'], ['get', 'utilisation'],
+            0, 0.18,
+            0.5, 0.30,
+            1, 0.55,
+          ],
+        },
+      });
+
+      // Border ring
+      map.addLayer({
+        id: 'safe-zones-border',
+        type: 'circle',
+        source: 'safe-zones',
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['get', 'capacity'],
+            1000, 12, 5000, 16, 10000, 22, 15000, 28,
+          ],
+          'circle-color': 'transparent',
+          'circle-stroke-color': [
+            'case',
+            ['>=', ['get', 'utilisation'], 0.8], '#E74C3C',
+            ['>=', ['get', 'utilisation'], 0.5], '#F39C12',
+            '#27AE60',
+          ],
+          'circle-stroke-width': 2,
+          'circle-stroke-opacity': 0.9,
+        },
+      });
+
+      // Zone name label
+      map.addLayer({
+        id: 'safe-zones-label',
+        type: 'symbol',
+        source: 'safe-zones',
+        layout: {
+          'text-field': ['get', 'name'],
+          'text-size': 11,
+          'text-offset': [0, 2.2],
+          'text-anchor': 'top',
+          'text-max-width': 10,
+        },
+        paint: {
+          'text-color': '#27AE60',
+          'text-halo-color': '#0A1628',
+          'text-halo-width': 1.5,
+        },
+      });
+
+      // ── Citizens ─────────────────────────────────────────────────────────
       map.addLayer({
         id: 'citizens-circle',
         type: 'circle',
@@ -140,7 +225,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         },
       });
 
-      // Real citizen (judge) dot
+      // Real citizen dot (larger, white stroke)
       map.addLayer({
         id: 'citizens-real-circle',
         type: 'circle',
@@ -154,49 +239,29 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         },
       });
 
-      // Safe zones
-      map.addLayer({
-        id: 'safe-zones-fill',
-        type: 'circle',
-        source: 'safe-zones',
-        paint: {
-          'circle-radius': 18,
-          'circle-color': '#27AE60',
-          'circle-opacity': [
-            'interpolate', ['linear'], ['get', 'utilisation'],
-            0, 0.15,
-            1, 0.55,
-          ],
-        },
+      // ── Safe zone click handler ──────────────────────────────────────────
+      map.on('click', 'safe-zones-fill', (e) => {
+        const props = e.features[0]?.properties;
+        if (!props) return;
+        setClickedZone({
+          props,
+          screenX: e.point.x,
+          screenY: e.point.y,
+        });
       });
-      map.addLayer({
-        id: 'safe-zones-border',
-        type: 'circle',
-        source: 'safe-zones',
-        paint: {
-          'circle-radius': 18,
-          'circle-color': 'transparent',
-          'circle-stroke-color': '#27AE60',
-          'circle-stroke-width': 2,
-          'circle-stroke-opacity': 0.9,
-        },
+
+      // Pointer cursor on hover
+      map.on('mouseenter', 'safe-zones-fill', () => {
+        map.getCanvas().style.cursor = 'pointer';
       });
-      map.addLayer({
-        id: 'safe-zones-label',
-        type: 'symbol',
-        source: 'safe-zones',
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-size': 11,
-          'text-offset': [0, 1.8],
-          'text-anchor': 'top',
-          'text-max-width': 10,
-        },
-        paint: {
-          'text-color': '#27AE60',
-          'text-halo-color': '#0A1628',
-          'text-halo-width': 1.5,
-        },
+      map.on('mouseleave', 'safe-zones-fill', () => {
+        map.getCanvas().style.cursor = '';
+      });
+
+      // Close popup when clicking elsewhere on the map
+      map.on('click', (e) => {
+        const layers = map.queryRenderedFeatures(e.point, { layers: ['safe-zones-fill'] });
+        if (layers.length === 0) setClickedZone(null);
       });
 
       loadedRef.current = true;
@@ -209,6 +274,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
     };
   }, []);
 
+  // ── Data updates on each WS tick ─────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !loadedRef.current || !wsData) return;
@@ -262,6 +328,18 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
   }, [wsData, flashingSet]);
 
   return (
-    <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Safe zone detail popup — rendered in React, positioned over map */}
+      {clickedZone && (
+        <SafeZoneDetail
+          zone={clickedZone.props}
+          screenX={clickedZone.screenX}
+          screenY={clickedZone.screenY}
+          onClose={() => setClickedZone(null)}
+        />
+      )}
+    </div>
   );
 }

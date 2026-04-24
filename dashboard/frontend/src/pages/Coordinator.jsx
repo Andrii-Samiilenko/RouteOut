@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import CoordinatorMap from '@/components/Map/CoordinatorMap';
+import MapErrorBoundary from '@/components/Map/MapErrorBoundary';
 import ControlPanel from '@/components/Dashboard/ControlPanel';
 import Statistics from '@/components/Dashboard/Statistics';
 import LLMLog from '@/components/Dashboard/LLMLog';
 import NotificationFeed from '@/components/Dashboard/NotificationFeed';
+import TimeSlider from '@/components/Dashboard/TimeSlider';
+import EvacuationChart from '@/components/Dashboard/EvacuationChart';
 
 /**
  * Coordinator dashboard.
  *
  * Layout: full-screen map with a floating glass panel on the right.
  *
- * Flash logic:
- *   When a route's route_version increases, add citizen_id to flashingCitizens
- *   for 2 seconds so the map renders it red then reverts to green.
+ * Responsibilities handled here (not in child components):
+ *   - Flash logic: route_version bump → citizen in flashingCitizens set for 2 s
+ *   - History snapshot: appended each WS tick for EvacuationChart
+ *   - Error toast auto-clear
  */
 export default function Coordinator() {
   const { data: wsData, connected } = useWebSocket();
@@ -21,7 +25,10 @@ export default function Coordinator() {
   const [error, setError] = useState(null);
   const prevVersionsRef = useRef({});
 
-  // Detect route_version bumps → flash red for 2 s
+  // Chart snapshot — new object reference each tick so EvacuationChart detects change
+  const [chartSnapshot, setChartSnapshot] = useState(null);
+
+  // ── Route flash detection ────────────────────────────────────────────────
   useEffect(() => {
     if (!wsData?.routes?.features) return;
 
@@ -49,7 +56,21 @@ export default function Coordinator() {
     }
   }, [wsData]);
 
-  // Auto-clear error after 5 s
+  // ── Build chart snapshot each tick ──────────────────────────────────────
+  useEffect(() => {
+    if (!wsData?.scenario?.active) return;
+    const stats = wsData.statistics || {};
+    const total = (stats.evacuating ?? 0) + (stats.reached_safety ?? 0);
+    if (total === 0) return;
+    setChartSnapshot({
+      elapsed: Math.round(wsData.scenario.elapsed_minutes ?? 0),
+      reached: stats.reached_safety ?? 0,
+      evacuating: stats.evacuating ?? 0,
+      total,
+    });
+  }, [wsData]);
+
+  // ── Error auto-clear ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!error) return;
     const t = setTimeout(() => setError(null), 5000);
@@ -58,13 +79,15 @@ export default function Coordinator() {
 
   const scenario = wsData?.scenario || {};
   const stats = wsData?.statistics || {};
-  const totalCitizens = Object.values(wsData?.citizens?.features || []).length;
+  const totalCitizens = (wsData?.citizens?.features || []).length;
 
   return (
     <div className="relative w-screen h-screen overflow-hidden font-sans">
 
       {/* ── Full-screen map ── */}
-      <CoordinatorMap wsData={wsData} flashingSet={flashingCitizens} />
+      <MapErrorBoundary>
+        <CoordinatorMap wsData={wsData} flashingSet={flashingCitizens} />
+      </MapErrorBoundary>
 
       {/* ── Connection badge (top-left) ── */}
       <div className="absolute top-4 left-4 z-20 flex items-center gap-1.5 bg-gray-900/80 backdrop-blur-sm rounded-full px-3 py-1.5 border border-gray-700/60 shadow">
@@ -92,6 +115,23 @@ export default function Coordinator() {
         </div>
       )}
 
+      {/* ── Safe zone legend (bottom-left) ── */}
+      <div className="absolute bottom-4 left-4 z-20 bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2 border border-gray-700/60 shadow">
+        <p className="text-gray-500 text-[9px] uppercase tracking-widest mb-1.5">Safe Zone Status</p>
+        <div className="flex flex-col gap-1">
+          {[
+            { color: 'bg-safe', label: 'Available (<50%)' },
+            { color: 'bg-citizen', label: 'Filling (50–80%)' },
+            { color: 'bg-danger', label: 'Near Full (>80%)' },
+          ].map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-2">
+              <span className={`w-2.5 h-2.5 rounded-full ${color} opacity-80`} />
+              <span className="text-gray-400 text-[10px]">{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* ── Floating right panel ── */}
       <div
         className="absolute top-4 right-4 bottom-4 z-20 w-[360px] flex flex-col gap-3 overflow-y-auto rounded-2xl bg-gray-900/90 backdrop-blur-md border border-gray-700/50 shadow-2xl p-4"
@@ -112,7 +152,19 @@ export default function Coordinator() {
           onError={setError}
         />
 
+        {/* Time slider — only visible when scenario is active */}
+        {scenario.active && (
+          <TimeSlider
+            elapsed={Math.round(scenario.elapsed_minutes ?? 0)}
+            disabled={!scenario.active}
+            onError={setError}
+          />
+        )}
+
         <Statistics stats={stats} total={totalCitizens} />
+
+        {/* Evacuation chart — shows once we have data */}
+        {chartSnapshot && <EvacuationChart snapshot={chartSnapshot} />}
 
         {wsData?.llm_log && <LLMLog log={wsData.llm_log} />}
 

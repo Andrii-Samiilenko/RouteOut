@@ -13,13 +13,13 @@ export default defineConfig({
     proxy: {
       // REST API: /api/... → http://localhost:8000/...
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:8001',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
       // WebSocket: ws://[host]:3000/ws → ws://localhost:8000/ws
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://localhost:8001',
         ws: true,
         changeOrigin: true,
       },

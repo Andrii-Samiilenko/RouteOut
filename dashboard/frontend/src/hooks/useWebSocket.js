@@ -26,7 +26,9 @@ export function useWebSocket() {
     if (unmounted.current) return;
 
     const gen = ++genRef.current; // capture this connection's generation
-    const url = 'ws://localhost:8000/ws';
+    // Use window.location.host so the connection goes through the Vite proxy
+    // (port 3000) — works for both localhost and a phone on the same WiFi.
+    const url = `ws://${window.location.host}/ws`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

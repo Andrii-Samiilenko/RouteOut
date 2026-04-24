@@ -54,6 +54,9 @@ def synthesise(
     Set LLM_PROVIDER=gemini to swap (one-line change for MLH Gemini prize).
     """
     provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
+    # Accept "google" as an alias for "gemini" (MLH Gemini prize)
+    if provider == "google":
+        provider = "gemini"
 
     user_content = (
         f"AEMET ALERT: {inputs.get('aemet', '')}\n\n"
