@@ -40,5 +40,7 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 
-# Graphs
-.graphml
+# Large local data files
+*.graphml
+routeout/backend/data/
+routeout/backend/cache/
