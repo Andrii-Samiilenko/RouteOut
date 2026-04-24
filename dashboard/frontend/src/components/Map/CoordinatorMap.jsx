@@ -9,72 +9,112 @@ const CENTER = [2.1686, 41.3874];
 const ZOOM = 12;
 const EMPTY_FC = { type: 'FeatureCollection', features: [] };
 
-function toFC(geo) {
-  if (!geo) return EMPTY_FC;
-  if (geo.type === 'FeatureCollection') return geo;
-  if (geo.type === 'Feature') return { type: 'FeatureCollection', features: [geo] };
-  return { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: geo, properties: {} }] };
-}
+const SHELTER_ICONS = { shelter: '⛺', hospital: '🏥', assembly: '🏛️' };
 
 /**
- * CoordinatorMap — city-wide dark Mapbox map.
+ * CoordinatorMap — supervisor view.
  *
  * Layer stack (bottom → top):
- *   ash-fill          charcoal burned-out area
- *   danger-outline    red perimeter (combined ash + fire front)
- *   fire-front-fill   bright orange active fire
- *   fire-front-glow   yellow outline glow
- *   predicted-outline dashed amber 15-min forecast
- *   routes-shadow     thin dark pass under routes
- *   routes-line       green evacuation routes (red flash on reroute)
- *   safe-zones-fill   circles scaled by capacity, colored by utilisation
- *   safe-zones-border ring border
- *   safe-zones-label  zone name label
- *   citizens-circle   amber dots (evacuating) / green (safe)
- *   citizens-real     judge's dot — DOM pulsing ring marker
+ *   draft-zone-fill/line  amber dashed polygon while supervisor is drawing
+ *   sim-zone-fill/line    red zone broadcast from backend after launch
+ *   ash-fill              charcoal burned-out area
+ *   danger-outline        red perimeter (combined ash + fire front)
+ *   fire-front-fill       bright orange active fire
+ *   predicted-outline     dashed amber 15-min forecast
+ *   routes-shadow/line    green evacuation routes (red flash on reroute)
+ *   safe-zones-fill/border/label  circles scaled by capacity, colored by utilisation
+ *   ws-shelters-circle/label      shelters from WS broadcast (post-launch)
+ *   citizens-circle/citizens-real-circle  amber dots + real citizen marker
  *
- * Safe zone color:
- *   utilisation < 50%  → green  (#27AE60)
- *   utilisation 50–80% → amber  (#F39C12)
- *   utilisation > 80%  → red    (#E74C3C)
- *
- * Safe zone radius scales linearly from capacity 1 000 → 5 000 (px 12 → 28).
+ * Props:
+ *   wsData            — WebSocket payload
+ *   flashingSet       — Set<citizen_id> for route-reroute flash
+ *   drawMode          — 'polygon' | 'shelter' | null
+ *   pendingShelters   — [{id,name,lat,lon,shelter_type,capacity}]
+ *   zonePolygon       — GeoJSON Polygon/Feature or null (draft)
+ *   onMapClick        — ({lat,lon}) => void
+ *   onPolygonComplete — (GeoJSON Feature Polygon) => void
  */
-export default function CoordinatorMap({ wsData, flashingSet }) {
+export default function CoordinatorMap({
+  wsData,
+  flashingSet,
+  drawMode,
+  pendingShelters = [],
+  zonePolygon,
+  onMapClick,
+  onPolygonComplete,
+}) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const loadedRef = useRef(false);
-  const realMarkerRef = useRef(null);
 
   // Safe zone click popup state
   const [clickedZone, setClickedZone] = useState(null); // { props, screenX, screenY }
 
+  // Polygon draw state
+  const drawVerticesRef = useRef([]);
+  const vertexMarkersRef = useRef([]);
+
+  // Shelter DOM markers keyed by id
+  const shelterMarkersRef = useRef({});
+
+  // ── Map initialisation ─────────────────────────────────────────────────
   useEffect(() => {
     const map = new mapboxgl.Map({
       container: containerRef.current,
       style: 'mapbox://styles/mapbox/dark-v11',
       center: CENTER,
       zoom: ZOOM,
-      attributionControl: true,
     });
     mapRef.current = map;
 
     map.on('load', () => {
       // ── Sources ─────────────────────────────────────────────────────────
-      map.addSource('ash',        { type: 'geojson', data: EMPTY_FC });
-      map.addSource('danger',     { type: 'geojson', data: EMPTY_FC });
-      map.addSource('fire-front', { type: 'geojson', data: EMPTY_FC });
-      map.addSource('predicted',  { type: 'geojson', data: EMPTY_FC });
-      map.addSource('routes',     { type: 'geojson', data: EMPTY_FC });
-      map.addSource('citizens',   { type: 'geojson', data: EMPTY_FC });
-      map.addSource('safe-zones', { type: 'geojson', data: EMPTY_FC });
+      map.addSource('draft-zone',  { type: 'geojson', data: EMPTY_FC });
+      map.addSource('sim-zone',    { type: 'geojson', data: EMPTY_FC });
+      map.addSource('ash',         { type: 'geojson', data: EMPTY_FC });
+      map.addSource('danger',      { type: 'geojson', data: EMPTY_FC });
+      map.addSource('fire-front',  { type: 'geojson', data: EMPTY_FC });
+      map.addSource('predicted',   { type: 'geojson', data: EMPTY_FC });
+      map.addSource('routes',      { type: 'geojson', data: EMPTY_FC });
+      map.addSource('citizens',    { type: 'geojson', data: EMPTY_FC });
+      map.addSource('safe-zones',  { type: 'geojson', data: EMPTY_FC });
+      map.addSource('ws-shelters', { type: 'geojson', data: EMPTY_FC });
 
-      // ── Ash ─────────────────────────────────────────────────────────────
+      // ── Draft zone (supervisor drawing, amber dashed) ────────────────────
+      map.addLayer({
+        id: 'draft-zone-fill',
+        type: 'fill',
+        source: 'draft-zone',
+        paint: { 'fill-color': '#F39C12', 'fill-opacity': 0.15 },
+      });
+      map.addLayer({
+        id: 'draft-zone-line',
+        type: 'line',
+        source: 'draft-zone',
+        paint: { 'line-color': '#F39C12', 'line-width': 2, 'line-dasharray': [4, 2] },
+      });
+
+      // ── Active simulation zone from WS (red, solid) ──────────────────────
+      map.addLayer({
+        id: 'sim-zone-fill',
+        type: 'fill',
+        source: 'sim-zone',
+        paint: { 'fill-color': '#C0392B', 'fill-opacity': 0.18 },
+      });
+      map.addLayer({
+        id: 'sim-zone-line',
+        type: 'line',
+        source: 'sim-zone',
+        paint: { 'line-color': '#C0392B', 'line-width': 2.5, 'line-opacity': 0.9 },
+      });
+
+      // ── Ash (burned-out charcoal area) ───────────────────────────────────
       map.addLayer({
         id: 'ash-fill',
         type: 'fill',
         source: 'ash',
-        paint: { 'fill-color': '#1a0d00', 'fill-opacity': 0.72 },
+        paint: { 'fill-color': '#2C2C2C', 'fill-opacity': 0.55 },
       });
 
       // ── Danger perimeter ────────────────────────────────────────────────
@@ -82,7 +122,7 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         id: 'danger-outline',
         type: 'line',
         source: 'danger',
-        paint: { 'line-color': '#C0392B', 'line-width': 1.5, 'line-opacity': 0.7 },
+        paint: { 'line-color': '#E74C3C', 'line-width': 2.5, 'line-opacity': 0.85 },
       });
 
       // ── Active fire front ────────────────────────────────────────────────
@@ -90,16 +130,16 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         id: 'fire-front-fill',
         type: 'fill',
         source: 'fire-front',
-        paint: { 'fill-color': '#FF4500', 'fill-opacity': 0.85 },
+        paint: { 'fill-color': '#FF5722', 'fill-opacity': 0.65 },
       });
       map.addLayer({
         id: 'fire-front-glow',
         type: 'line',
         source: 'fire-front',
-        paint: { 'line-color': '#FFD700', 'line-width': 2.5, 'line-opacity': 0.9 },
+        paint: { 'line-color': '#FFCC00', 'line-width': 2, 'line-opacity': 0.7 },
       });
 
-      // ── Predicted zone ───────────────────────────────────────────────────
+      // ── Predicted zone (dashed amber) ────────────────────────────────────
       map.addLayer({
         id: 'predicted-outline',
         type: 'line',
@@ -134,38 +174,28 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         },
       });
 
-      // ── Safe zones — fill circle (capacity-scaled radius, utilisation color) ──
+      // ── Safe zones (capacity-scaled circles, utilisation color) ─────────
       map.addLayer({
         id: 'safe-zones-fill',
         type: 'circle',
         source: 'safe-zones',
         paint: {
-          // Radius scales with capacity: 5 000 → 14 px, 15 000 → 28 px
           'circle-radius': [
             'interpolate', ['linear'], ['get', 'capacity'],
-            1000, 12,
-            5000, 16,
-            10000, 22,
-            15000, 28,
+            1000, 12, 5000, 16, 10000, 22, 15000, 28,
           ],
-          // Fill color by utilisation level
           'circle-color': [
             'case',
-            ['>=', ['get', 'utilisation'], 0.8], '#E74C3C',  // red — near full
-            ['>=', ['get', 'utilisation'], 0.5], '#F39C12',  // amber — filling
-            '#27AE60',                                         // green — safe
+            ['>=', ['get', 'utilisation'], 0.8], '#E74C3C',
+            ['>=', ['get', 'utilisation'], 0.5], '#F39C12',
+            '#27AE60',
           ],
-          // Opacity increases as zone fills up (makes danger visible)
           'circle-opacity': [
             'interpolate', ['linear'], ['get', 'utilisation'],
-            0, 0.18,
-            0.5, 0.30,
-            1, 0.55,
+            0, 0.18, 0.5, 0.30, 1, 0.55,
           ],
         },
       });
-
-      // Border ring
       map.addLayer({
         id: 'safe-zones-border',
         type: 'circle',
@@ -186,8 +216,6 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
           'circle-stroke-opacity': 0.9,
         },
       });
-
-      // Zone name label
       map.addLayer({
         id: 'safe-zones-label',
         type: 'symbol',
@@ -206,12 +234,41 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
         },
       });
 
+      // ── WS-broadcast shelters (post-launch) ──────────────────────────────
+      map.addLayer({
+        id: 'ws-shelters-circle',
+        type: 'circle',
+        source: 'ws-shelters',
+        paint: {
+          'circle-radius': 16,
+          'circle-color': '#27AE60',
+          'circle-opacity': 0.25,
+          'circle-stroke-color': '#27AE60',
+          'circle-stroke-width': 2,
+        },
+      });
+      map.addLayer({
+        id: 'ws-shelters-label',
+        type: 'symbol',
+        source: 'ws-shelters',
+        layout: {
+          'text-field': ['get', 'name'],
+          'text-size': 11,
+          'text-offset': [0, 1.8],
+          'text-anchor': 'top',
+        },
+        paint: {
+          'text-color': '#27AE60',
+          'text-halo-color': '#0A1628',
+          'text-halo-width': 1.5,
+        },
+      });
+
       // ── Citizens ─────────────────────────────────────────────────────────
       map.addLayer({
         id: 'citizens-circle',
         type: 'circle',
         source: 'citizens',
-        filter: ['!=', ['get', 'is_real'], true],
         paint: {
           'circle-radius': 5,
           'circle-color': [
@@ -224,8 +281,6 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
           'circle-opacity': 0.9,
         },
       });
-
-      // Real citizen dot (larger, white stroke)
       map.addLayer({
         id: 'citizens-real-circle',
         type: 'circle',
@@ -243,25 +298,17 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
       map.on('click', 'safe-zones-fill', (e) => {
         const props = e.features[0]?.properties;
         if (!props) return;
-        setClickedZone({
-          props,
-          screenX: e.point.x,
-          screenY: e.point.y,
-        });
+        setClickedZone({ props, screenX: e.point.x, screenY: e.point.y });
       });
-
-      // Pointer cursor on hover
       map.on('mouseenter', 'safe-zones-fill', () => {
         map.getCanvas().style.cursor = 'pointer';
       });
       map.on('mouseleave', 'safe-zones-fill', () => {
-        map.getCanvas().style.cursor = '';
+        map.getCanvas().style.cursor = drawMode ? 'crosshair' : '';
       });
-
-      // Close popup when clicking elsewhere on the map
       map.on('click', (e) => {
-        const layers = map.queryRenderedFeatures(e.point, { layers: ['safe-zones-fill'] });
-        if (layers.length === 0) setClickedZone(null);
+        const hits = map.queryRenderedFeatures(e.point, { layers: ['safe-zones-fill'] });
+        if (hits.length === 0) setClickedZone(null);
       });
 
       loadedRef.current = true;
@@ -269,69 +316,126 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
 
     return () => {
       loadedRef.current = false;
-      realMarkerRef.current?.remove();
+      vertexMarkersRef.current.forEach((m) => m.remove());
+      vertexMarkersRef.current = [];
+      Object.values(shelterMarkersRef.current).forEach((m) => m.remove());
+      shelterMarkersRef.current = {};
       map.remove();
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Map interaction — polygon draw + shelter placement ─────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    function handleClick(e) {
+      if (drawMode === 'shelter') {
+        onMapClick?.({ lat: e.lngLat.lat, lon: e.lngLat.lng });
+        return;
+      }
+      if (drawMode === 'polygon') {
+        const coord = [e.lngLat.lng, e.lngLat.lat];
+        drawVerticesRef.current.push(coord);
+        _addVertexDot(map, e.lngLat.lng, e.lngLat.lat);
+        _updateDraftLine(map, drawVerticesRef.current);
+      }
+    }
+
+    function handleDblClick(e) {
+      if (drawMode !== 'polygon') return;
+      e.preventDefault();
+      const verts = drawVerticesRef.current;
+      if (verts.length < 3) return;
+
+      const ring = [...verts, verts[0]];
+      const polygon = {
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [ring] },
+        properties: {},
+      };
+
+      vertexMarkersRef.current.forEach((m) => m.remove());
+      vertexMarkersRef.current = [];
+      drawVerticesRef.current = [];
+
+      onPolygonComplete?.(polygon);
+    }
+
+    map.doubleClickZoom.disable();
+    map.on('click', handleClick);
+    map.on('dblclick', handleDblClick);
+
+    return () => {
+      map.off('click', handleClick);
+      map.off('dblclick', handleDblClick);
+      map.doubleClickZoom.enable();
+    };
+  }, [drawMode, onMapClick, onPolygonComplete]);
 
   // ── Data updates on each WS tick ─────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !loadedRef.current || !wsData) return;
+    if (!map || !loadedRef.current) return;
 
-    map.getSource('ash')?.setData(toFC(wsData.ash_polygon));
-    map.getSource('fire-front')?.setData(toFC(wsData.fire_front_polygon));
-    map.getSource('danger')?.setData(toFC(wsData.danger_polygon));
-    map.getSource('predicted')?.setData(toFC(wsData.predicted_polygon));
+    // Hazard layers
+    map.getSource('ash')?.setData(wsData?.ash_geojson ?? EMPTY_FC);
+    map.getSource('danger')?.setData(wsData?.danger_geojson ?? EMPTY_FC);
+    map.getSource('fire-front')?.setData(wsData?.fire_front ?? EMPTY_FC);
+    map.getSource('predicted')?.setData(wsData?.predicted_zone ?? EMPTY_FC);
 
-    if (wsData.routes) {
-      const withFlash = {
-        ...wsData.routes,
-        features: (wsData.routes.features || []).map((f) => ({
-          ...f,
-          properties: {
-            ...f.properties,
-            flashing: flashingSet ? flashingSet.has(f.properties?.citizen_id) : false,
-          },
-        })),
-      };
-      map.getSource('routes')?.setData(withFlash);
-    } else {
-      map.getSource('routes')?.setData(EMPTY_FC);
-    }
+    // Routes — inject flashing flag into each feature
+    const routeFeatures = (wsData?.routes?.features ?? []).map((f) => ({
+      ...f,
+      properties: {
+        ...f.properties,
+        flashing: flashingSet?.has(f.properties?.citizen_id) ?? false,
+      },
+    }));
+    map.getSource('routes')?.setData({
+      type: 'FeatureCollection',
+      features: routeFeatures,
+    });
 
-    map.getSource('citizens')?.setData(wsData.citizens || EMPTY_FC);
-    map.getSource('safe-zones')?.setData(wsData.safe_zones || EMPTY_FC);
+    // Citizens
+    map.getSource('citizens')?.setData(wsData?.citizens ?? EMPTY_FC);
 
-    // Real-citizen pulsing DOM marker
-    const realFeature = (wsData.citizens?.features || []).find(
-      (f) => f.properties?.is_real
-    );
-    if (realFeature) {
-      const [lon, lat] = realFeature.geometry.coordinates;
-      if (!realMarkerRef.current) {
-        const el = document.createElement('div');
-        el.style.cssText = 'width:32px;height:32px;position:relative;';
-        const ring = document.createElement('div');
-        ring.className = 'citizen-pulse-ring';
-        el.appendChild(ring);
-        realMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: 'center' })
-          .setLngLat([lon, lat])
-          .addTo(map);
-      } else {
-        realMarkerRef.current.setLngLat([lon, lat]);
+    // Safe zones
+    map.getSource('safe-zones')?.setData(wsData?.safe_zones ?? EMPTY_FC);
+
+    // Draft zone (supervisor drawing)
+    map.getSource('draft-zone')?.setData(zonePolygon ?? EMPTY_FC);
+
+    // Active simulation zone from WS
+    const simZone = wsData?.simulation?.zone_polygon;
+    map.getSource('sim-zone')?.setData(simZone ?? EMPTY_FC);
+
+    // WS shelter GeoJSON (post-launch)
+    map.getSource('ws-shelters')?.setData(wsData?.shelters_geojson ?? EMPTY_FC);
+
+    // Pending shelter DOM markers
+    const currentIds = new Set((pendingShelters ?? []).map((s) => s.id));
+    for (const id of Object.keys(shelterMarkersRef.current)) {
+      if (!currentIds.has(id)) {
+        shelterMarkersRef.current[id].remove();
+        delete shelterMarkersRef.current[id];
       }
-    } else if (realMarkerRef.current) {
-      realMarkerRef.current.remove();
-      realMarkerRef.current = null;
     }
-  }, [wsData, flashingSet]);
+    for (const s of (pendingShelters ?? [])) {
+      if (!shelterMarkersRef.current[s.id]) {
+        shelterMarkersRef.current[s.id] = _makeShelterMarker(map, s);
+      }
+    }
+  }, [wsData, flashingSet, zonePolygon, pendingShelters]);
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      <div
+        ref={containerRef}
+        style={{ width: '100%', height: '100%', cursor: drawMode ? 'crosshair' : 'default' }}
+      />
 
-      {/* Safe zone detail popup — rendered in React, positioned over map */}
       {clickedZone && (
         <SafeZoneDetail
           zone={clickedZone.props}
@@ -342,4 +446,44 @@ export default function CoordinatorMap({ wsData, flashingSet }) {
       )}
     </div>
   );
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function _addVertexDot(map, lng, lat) {
+  const el = document.createElement('div');
+  Object.assign(el.style, {
+    width: '10px', height: '10px', borderRadius: '50%',
+    background: '#F39C12', border: '2px solid #fff',
+    boxShadow: '0 0 6px rgba(0,0,0,0.6)',
+  });
+  const m = new mapboxgl.Marker({ element: el, anchor: 'center' })
+    .setLngLat([lng, lat])
+    .addTo(map);
+  vertexMarkersRef.current.push(m);
+}
+
+function _updateDraftLine(map, verts) {
+  if (verts.length < 2) return;
+  map.getSource('draft-zone')?.setData({
+    type: 'Feature',
+    geometry: { type: 'LineString', coordinates: verts },
+    properties: {},
+  });
+}
+
+function _makeShelterMarker(map, shelter) {
+  const icon = SHELTER_ICONS[shelter.shelter_type] ?? '⛺';
+  const el = document.createElement('div');
+  Object.assign(el.style, { display: 'flex', flexDirection: 'column', alignItems: 'center' });
+  el.innerHTML = `
+    <div style="font-size:24px;line-height:1;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.9))">${icon}</div>
+    <div style="background:rgba(10,22,40,0.9);color:#27AE60;font-size:10px;font-weight:600;
+      padding:2px 6px;border-radius:4px;margin-top:2px;white-space:nowrap;border:1px solid #27AE60;">
+      ${shelter.name}
+    </div>
+  `;
+  return new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+    .setLngLat([shelter.lon, shelter.lat])
+    .addTo(map);
 }
