@@ -326,7 +326,7 @@ export default function CoordinatorMap({
     };
   }, [drawMode, onMapClick, onPolygonComplete]);
 
-  // ── Clear draw vertices when zone is externally reset ─────────────────────
+  // ── Clear draw vertices when zone or drawMode is externally reset ──────────
   useEffect(() => {
     if (zonePolygon === null) {
       const map = mapRef.current;
@@ -337,7 +337,7 @@ export default function CoordinatorMap({
         map.getSource('draft-zone')?.setData(EMPTY_FC);
       }
     }
-  }, [zonePolygon]);
+  }, [zonePolygon, drawMode]);
 
   // ── Data updates on each WS tick ─────────────────────────────────────────
   useEffect(() => {

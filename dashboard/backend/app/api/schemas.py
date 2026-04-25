@@ -151,6 +151,8 @@ class AlertForwardPayload(BaseModel):
     message:       str
     shelter:       Optional[Dict[str, Any]] = None
     path:          List[Dict[str, float]]   = []
+    danger_origin: Optional[Dict[str, float]] = None  # {"lat": float, "lon": float}
+    zone_polygon:  Optional[Dict[str, Any]]   = None  # GeoJSON Polygon/Feature
 
 
 # ---------------------------------------------------------------------------

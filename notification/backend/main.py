@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -95,11 +96,15 @@ def _nearest_node(lat: float, lon: float):
     return nodes[idx]
 
 
-def _compute_route(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> List[Dict[str, float]]:
-    """Return list of {lat, lng} waypoints for the walking route."""
+def _compute_route(
+    from_lat: float, from_lon: float,
+    to_lat: float, to_lon: float,
+    danger_lat: Optional[float] = None,
+    danger_lon: Optional[float] = None,
+) -> List[Dict[str, float]]:
+    """Return waypoints for a safe walking route, penalising edges near the danger origin."""
     g = _load_graph()
     if g is None:
-        # Straight line fallback
         return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
 
     import networkx as nx
@@ -108,14 +113,37 @@ def _compute_route(from_lat: float, from_lon: float, to_lat: float, to_lon: floa
     if src is None or dst is None or src == dst:
         return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
 
-    def _edge_length(u, v, data):
+    def _edge_weight(u, v, data):
         try:
-            return float(data.get("length", 1))
+            base = float(data.get("length", 1))
         except (TypeError, ValueError):
-            return 1.0
+            base = 1.0
+        if danger_lat is not None and danger_lon is not None:
+            try:
+                u_lat = float(g.nodes[u].get("y", danger_lat))
+                u_lon = float(g.nodes[u].get("x", danger_lon))
+                v_lat = float(g.nodes[v].get("y", danger_lat))
+                v_lon = float(g.nodes[v].get("x", danger_lon))
+                mid_lat = (u_lat + v_lat) / 2
+                mid_lon = (u_lon + v_lon) / 2
+                dist_km = math.sqrt(
+                    ((mid_lat - danger_lat) * 111) ** 2 +
+                    ((mid_lon - danger_lon) * 85) ** 2
+                )
+                if dist_km < 0.3:
+                    base *= 200   # very close to origin — almost impassable
+                elif dist_km < 1.0:
+                    base *= 30
+                elif dist_km < 2.5:
+                    base *= 8
+                elif dist_km < 5.0:
+                    base *= 2
+            except Exception:
+                pass
+        return base
 
     try:
-        path_nodes = nx.shortest_path(g, src, dst, weight=_edge_length)
+        path_nodes = nx.shortest_path(g, src, dst, weight=_edge_weight)
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
 
@@ -136,10 +164,12 @@ def _compute_route(from_lat: float, from_lon: float, to_lat: float, to_lon: floa
 # ---------------------------------------------------------------------------
 
 class AlertPayload(BaseModel):
-    disaster_type: str                      # fire | flood | tsunami
+    disaster_type: str
     message: str
-    shelter: Dict[str, Any] | None = None  # { name, lat, lon }
-    path: List[Dict[str, float]] = []      # [{ lat, lng }, ...]
+    shelter:       Dict[str, Any] | None       = None   # { name, lat, lon }
+    path:          List[Dict[str, float]]       = []
+    danger_origin: Dict[str, float] | None     = None   # { lat, lon } of hazard source
+    zone_polygon:  Dict[str, Any] | None       = None   # GeoJSON Polygon/Feature
 
 
 class PushSubscription(BaseModel):
@@ -234,15 +264,24 @@ async def qr_endpoint():
 # Route computation
 # ---------------------------------------------------------------------------
 
+@app.post("/clear-alert")
+async def clear_alert():
+    global last_alert
+    last_alert = None
+    return {"status": "cleared"}
+
+
 @app.get("/route")
 async def get_route(
     from_lat: float = Query(...),
     from_lon: float = Query(...),
     to_lat: float = Query(...),
     to_lon: float = Query(...),
+    danger_lat: Optional[float] = Query(None),
+    danger_lon: Optional[float] = Query(None),
 ):
-    """Return walking route waypoints from user GPS to shelter."""
-    path = _compute_route(from_lat, from_lon, to_lat, to_lon)
+    """Return a safe walking route from user GPS to shelter, avoiding the danger origin."""
+    path = _compute_route(from_lat, from_lon, to_lat, to_lon, danger_lat, danger_lon)
     return {"path": path, "waypoints": len(path)}
 
 

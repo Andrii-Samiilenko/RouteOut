@@ -82,6 +82,26 @@ function setStatus(state) {
   }
 }
 
+// ── Geometry helpers ───────────────────────────────────────────────────────
+function _pointInPolygon(lat, lon, geoJsonPolygon) {
+  // Extract ring from GeoJSON Polygon or Feature
+  let ring;
+  try {
+    const geom = geoJsonPolygon.geometry ?? geoJsonPolygon;
+    ring = geom.coordinates[0]; // [[lon,lat], ...]
+  } catch { return true; } // if malformed, don't block
+  // Ray casting
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
 // ── Alert display ──────────────────────────────────────────────────────────
 function showAlert(payload) {
   const type = payload.disaster_type || 'fire';
@@ -239,6 +259,15 @@ function fetchAndDrawRoute(payload, accentColor) {
 }
 
 function _onLocationReady(userLat, userLon, shelter, accentColor) {
+  // Check user is within the evacuation zone (if zone was sent with alert)
+  const zone = _currentPayload?.zone_polygon;
+  if (zone && !_pointInPolygon(userLat, userLon, zone)) {
+    setRouteStatus('You are outside the evacuation zone — no action needed', 'ok');
+    map.setView([userLat, userLon], 14);
+    setTimeout(hideRouteStatus, 6000);
+    return;
+  }
+
   // Place / update user marker
   if (userMarker) map.removeLayer(userMarker);
   const userIcon = L.divIcon({
@@ -261,7 +290,6 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
     ((userLon - shelter.lon) * 85) ** 2
   );
   if (dKm > 50) {
-    // Position too far from shelter — GPS still stale, just show shelter
     setRouteStatus('Could not confirm your location — showing shelter only', 'warn');
     setTimeout(hideRouteStatus, 5000);
     map.setView([shelter.lat, shelter.lon], 14);
@@ -270,7 +298,10 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
 
   setRouteStatus('Calculating route…', 'warn');
 
-  const url = `${API_BASE}/route?from_lat=${userLat}&from_lon=${userLon}&to_lat=${shelter.lat}&to_lon=${shelter.lon}`;
+  // Include danger origin so route avoids the hazard source
+  const danger = _currentPayload?.danger_origin;
+  const dangerParams = danger ? `&danger_lat=${danger.lat}&danger_lon=${danger.lon}` : '';
+  const url = `${API_BASE}/route?from_lat=${userLat}&from_lon=${userLon}&to_lat=${shelter.lat}&to_lon=${shelter.lon}${dangerParams}`;
   fetch(url)
     .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then((data) => {

@@ -30,6 +30,13 @@ router = APIRouter()
 
 NOTIFICATION_SERVICE_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://localhost:9000")
 
+# Disaster origin points (where danger radiates from)
+_DANGER_ORIGINS = {
+    "fire":    {"lat": 41.430, "lon": 2.118},  # Collserola ridge
+    "flood":   {"lat": 41.377, "lon": 2.193},  # Barceloneta coast
+    "tsunami": {"lat": 41.377, "lon": 2.193},  # Same coast
+}
+
 _DISASTER_MESSAGES = {
     DisasterType.fire:    "FIRE EMERGENCY: Evacuate immediately. Follow the marked route to your assigned shelter.",
     DisasterType.flood:   "FLOOD EMERGENCY: Move to higher ground now. Follow your route to the nearest shelter.",
@@ -136,6 +143,8 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
             if best_shelter else None
         ),
         path=[],
+        danger_origin=_DANGER_ORIGINS.get(req.disaster_type.value),
+        zone_polygon=req.zone_polygon,
     )
     notif_ok = await _forward_alert(alert)
     engine.notification_service_online = notif_ok
@@ -163,6 +172,15 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
 async def reset_simulation():
     engine = _get_engine()
     engine.reset()
+
+    # Clear cached alert on notification service so phones stop showing old alert
+    for url in ["https://localhost:9000/clear-alert", "http://localhost:9000/clear-alert"]:
+        try:
+            async with httpx.AsyncClient(timeout=3.0, verify=False) as client:
+                await client.post(url)
+            break
+        except Exception:
+            pass
 
     from app.api.websocket import broadcast_state
     await broadcast_state(engine)
