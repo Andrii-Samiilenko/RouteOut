@@ -127,11 +127,15 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
         origin_lon=req.origin_lon,
     )
 
-    # Load graph (may be cached)
-    _get_graph()
+    # Load graph + spawn evacuees off the event loop so launch returns instantly.
+    # Evacuees appear on the map within seconds after the response.
+    async def _spawn_bg() -> None:
+        await asyncio.to_thread(_get_graph)
+        await asyncio.to_thread(engine.spawn_virtual_evacuees, 30)
+        from app.api.websocket import broadcast_state
+        await broadcast_state(engine)
 
-    # Spawn virtual evacuees (runs synchronously — fast enough for demo)
-    engine.spawn_virtual_evacuees(count=80)
+    asyncio.create_task(_spawn_bg())
 
     # Forward alert to notification service
     all_shelters = [

@@ -20,10 +20,12 @@ Endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -191,7 +193,13 @@ last_alert: Dict[str, Any] | None = None
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="RouteOut Notification Service", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    asyncio.create_task(asyncio.to_thread(_load_graph))
+    yield
+
+
+app = FastAPI(title="RouteOut Notification Service", version="1.0.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -282,7 +290,9 @@ async def get_route(
     danger_lon: Optional[float] = Query(None),
 ):
     """Return a safe walking route from user GPS to shelter, avoiding the danger origin."""
-    path = _compute_route(from_lat, from_lon, to_lat, to_lon, danger_lat, danger_lon)
+    path = await asyncio.to_thread(
+        _compute_route, from_lat, from_lon, to_lat, to_lon, danger_lat, danger_lon
+    )
     return {"path": path, "waypoints": len(path)}
 
 
