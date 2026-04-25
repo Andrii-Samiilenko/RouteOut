@@ -298,8 +298,8 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 # Entry point
 # ---------------------------------------------------------------------------
 
-SSL_CERT = os.getenv("SSL_CERT", "/tmp/notif_cert.pem")
-SSL_KEY  = os.getenv("SSL_KEY",  "/tmp/notif_key.pem")
+SSL_CERT = "/tmp/notif_cert.pem"
+SSL_KEY  = "/tmp/notif_key.pem"
 
 
 def _get_local_ip() -> str:
@@ -314,33 +314,27 @@ def _get_local_ip() -> str:
         return "127.0.0.1"
 
 
-def _generate_cert(cert_path: str, key_path: str, ip: str) -> bool:
+def _generate_cert(ip: str) -> bool:
+    import subprocess
     try:
-        import subprocess
-        result = subprocess.run([
+        subprocess.run([
             "openssl", "req", "-x509", "-newkey", "rsa:2048",
-            "-keyout", key_path, "-out", cert_path,
-            "-days", "1", "-nodes",
-            "-subj", "/CN=routeout",
+            "-keyout", SSL_KEY, "-out", SSL_CERT,
+            "-days", "1", "-nodes", "-subj", "/CN=routeout",
             "-addext", f"subjectAltName=IP:{ip},IP:127.0.0.1,DNS:localhost",
-        ], capture_output=True, timeout=15)
-        return result.returncode == 0
+        ], capture_output=True, timeout=15, check=True)
+        return True
     except Exception as e:
-        logger.warning("Could not generate SSL cert: %s", e)
+        logger.warning("SSL cert generation failed: %s", e)
         return False
 
 
 if __name__ == "__main__":
     maybe_generate_keys()
     local_ip = _get_local_ip()
-    logger.info("Detected local IP: %s", local_ip)
 
-    ssl_kwargs = {}
-    if _generate_cert(SSL_CERT, SSL_KEY, local_ip):
-        ssl_kwargs = {"ssl_certfile": SSL_CERT, "ssl_keyfile": SSL_KEY}
-        logger.info("Starting notification service on https://%s:%d", local_ip, PORT)
-        logger.info(">>> Phone URL: https://%s:%d  (accept the cert warning)", local_ip, PORT)
-    else:
-        logger.warning("SSL cert generation failed — starting on HTTP (geolocation blocked on LAN)")
-        logger.info("Starting notification service on http://%s:%d", local_ip, PORT)
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=False, **ssl_kwargs)
+    logger.info("=" * 60)
+    logger.info("Notification service: http://%s:%d", local_ip, PORT)
+    logger.info("Start tunnel for phones: cloudflared tunnel --url http://localhost:%d", PORT)
+    logger.info("=" * 60)
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
