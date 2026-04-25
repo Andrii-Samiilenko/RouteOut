@@ -165,11 +165,12 @@ def _compute_route(
 
 class AlertPayload(BaseModel):
     disaster_type: str
-    message: str
-    shelter:       Dict[str, Any] | None       = None   # { name, lat, lon }
+    message:       str
+    shelter:       Dict[str, Any] | None       = None
+    shelters:      List[Dict[str, Any]]        = []     # all shelters — phone picks nearest
     path:          List[Dict[str, float]]       = []
-    danger_origin: Dict[str, float] | None     = None   # { lat, lon } of hazard source
-    zone_polygon:  Dict[str, Any] | None       = None   # GeoJSON Polygon/Feature
+    danger_origin: Dict[str, float] | None     = None
+    zone_polygon:  Dict[str, Any] | None       = None
 
 
 class PushSubscription(BaseModel):

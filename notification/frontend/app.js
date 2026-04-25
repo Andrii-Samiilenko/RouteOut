@@ -112,6 +112,16 @@ function setStatus(state) {
 }
 
 // ── Geometry helpers ───────────────────────────────────────────────────────
+function _nearestShelter(userLat, userLon, shelters) {
+  if (!shelters || shelters.length === 0) return null;
+  let best = null, bestDist = Infinity;
+  for (const s of shelters) {
+    const d = ((s.lat - userLat) * 111) ** 2 + ((s.lon - userLon) * 85) ** 2;
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  return best;
+}
+
 function _pointInPolygon(lat, lon, geoJsonPolygon) {
   // Extract ring from GeoJSON Polygon or Feature
   let ring;
@@ -322,6 +332,32 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
     map.setView([userLat, userLon], 14);
     setTimeout(hideRouteStatus, 6000);
     return;
+  }
+
+  // Pick the nearest shelter for this specific user
+  const nearest = _nearestShelter(userLat, userLon, _currentPayload?.shelters);
+  if (nearest) {
+    shelter = nearest;
+    // Update shelter badge with the personalised shelter name
+    const shelterNameEl = document.getElementById('shelter-name');
+    const shelterBadge  = document.getElementById('shelter-badge');
+    if (shelterNameEl) shelterNameEl.textContent = shelter.name;
+    if (shelterBadge)  shelterBadge.classList.add('visible');
+    // Move shelter marker to nearest shelter
+    if (shelterMarker) map.removeLayer(shelterMarker);
+    const shelterIcon = L.divIcon({
+      className: '',
+      html: `<div class="shelter-pin-wrap">
+        <svg width="22" height="28" viewBox="0 0 22 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M11 1C6.6 1 3 4.6 3 9C3 14.5 11 27 11 27C11 27 19 14.5 19 9C19 4.6 15.4 1 11 1Z"
+                fill="${accentColor}" stroke="white" stroke-width="1.5"/>
+          <circle cx="11" cy="9" r="3" fill="white" opacity="0.9"/>
+        </svg>
+        <div class="shelter-pin-label">${shelter.name}</div>
+      </div>`,
+      iconSize: [80, 46], iconAnchor: [11, 28],
+    });
+    shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon }).addTo(map);
   }
 
   if (userMarker) map.removeLayer(userMarker);

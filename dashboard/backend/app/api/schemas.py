@@ -149,10 +149,11 @@ class LaunchSimulationRequest(BaseModel):
 class AlertForwardPayload(BaseModel):
     disaster_type: str
     message:       str
-    shelter:       Optional[Dict[str, Any]] = None
+    shelter:       Optional[Dict[str, Any]] = None   # kept for backwards compat
+    shelters:      List[Dict[str, Any]]     = []     # all available shelters
     path:          List[Dict[str, float]]   = []
-    danger_origin: Optional[Dict[str, float]] = None  # {"lat": float, "lon": float}
-    zone_polygon:  Optional[Dict[str, Any]]   = None  # GeoJSON Polygon/Feature
+    danger_origin: Optional[Dict[str, float]] = None
+    zone_polygon:  Optional[Dict[str, Any]]   = None
 
 
 # ---------------------------------------------------------------------------

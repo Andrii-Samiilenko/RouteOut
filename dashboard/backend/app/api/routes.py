@@ -134,14 +134,15 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
     engine.spawn_virtual_evacuees(count=80)
 
     # Forward alert to notification service
-    best_shelter = shelters_raw[0] if shelters_raw else None
+    all_shelters = [
+        {"name": s.name, "lat": s.lat, "lon": s.lon, "capacity": s.capacity}
+        for s in shelters_raw
+    ]
     alert = AlertForwardPayload(
         disaster_type=req.disaster_type.value,
         message=_DISASTER_MESSAGES[req.disaster_type],
-        shelter=(
-            {"name": best_shelter.name, "lat": best_shelter.lat, "lon": best_shelter.lon}
-            if best_shelter else None
-        ),
+        shelter=all_shelters[0] if all_shelters else None,  # fallback for old clients
+        shelters=all_shelters,
         path=[],
         danger_origin=_DANGER_ORIGINS.get(req.disaster_type.value),
         zone_polygon=req.zone_polygon,

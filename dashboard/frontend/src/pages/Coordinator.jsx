@@ -4,7 +4,6 @@ import CoordinatorMap from '@/components/Map/CoordinatorMap';
 import MapErrorBoundary from '@/components/Map/MapErrorBoundary';
 import ControlPanel from '@/components/Dashboard/ControlPanel';
 import Statistics from '@/components/Dashboard/Statistics';
-import NotificationFeed from '@/components/Dashboard/NotificationFeed';
 
 /**
  * Supervisor dashboard.
@@ -106,7 +105,6 @@ export default function Coordinator() {
   const scenario    = wsData?.scenario    || {};
   const stats       = wsData?.statistics  || {};
   const totalCit    = (wsData?.citizens?.features || []).length;
-  const notifications = wsData?.notifications || [];
 
   return (
     <div className="relative w-screen h-screen overflow-hidden font-sans bg-gray-950">
@@ -206,10 +204,6 @@ export default function Coordinator() {
         {/* Statistics — always show, dims when inactive */}
         <Statistics stats={stats} total={totalCit} active={scenario.active} />
 
-        {/* Rerouting event feed */}
-        {notifications.length > 0 && (
-          <NotificationFeed notifications={notifications} />
-        )}
       </div>
 
       {/* Shelter placement dialog */}
