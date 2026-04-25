@@ -76,8 +76,6 @@ export default function CoordinatorMap({
       map.addSource('danger',      { type: 'geojson', data: EMPTY_FC });
       map.addSource('fire-front',  { type: 'geojson', data: EMPTY_FC });
       map.addSource('predicted',   { type: 'geojson', data: EMPTY_FC });
-      map.addSource('routes',      { type: 'geojson', data: EMPTY_FC });
-      map.addSource('citizens',    { type: 'geojson', data: EMPTY_FC });
       map.addSource('safe-zones',  { type: 'geojson', data: EMPTY_FC });
       map.addSource('ws-shelters', { type: 'geojson', data: EMPTY_FC });
 
@@ -152,27 +150,8 @@ export default function CoordinatorMap({
         },
       });
 
-      // ── Routes ───────────────────────────────────────────────────────────
-      map.addLayer({
-        id: 'routes-shadow',
-        type: 'line',
-        source: 'routes',
-        paint: { 'line-color': '#000', 'line-width': 4, 'line-opacity': 0.3 },
-      });
-      map.addLayer({
-        id: 'routes-line',
-        type: 'line',
-        source: 'routes',
-        paint: {
-          'line-color': [
-            'case',
-            ['boolean', ['get', 'flashing'], false], '#E74C3C',
-            '#1ABC9C',
-          ],
-          'line-width': 2,
-          'line-opacity': 0.8,
-        },
-      });
+      // Individual evacuation routes not shown on coordinator view —
+      // safe zone utilisation circles convey aggregate flow instead.
 
       // ── Safe zones (capacity-scaled circles, utilisation color) ─────────
       map.addLayer({
@@ -264,35 +243,8 @@ export default function CoordinatorMap({
         },
       });
 
-      // ── Citizens ─────────────────────────────────────────────────────────
-      map.addLayer({
-        id: 'citizens-circle',
-        type: 'circle',
-        source: 'citizens',
-        paint: {
-          'circle-radius': 5,
-          'circle-color': [
-            'case',
-            ['==', ['get', 'status'], 'reached_safety'], '#27AE60',
-            '#F39C12',
-          ],
-          'circle-stroke-color': '#0A1628',
-          'circle-stroke-width': 1,
-          'circle-opacity': 0.9,
-        },
-      });
-      map.addLayer({
-        id: 'citizens-real-circle',
-        type: 'circle',
-        source: 'citizens',
-        filter: ['==', ['get', 'is_real'], true],
-        paint: {
-          'circle-radius': 8,
-          'circle-color': '#F39C12',
-          'circle-stroke-color': '#fff',
-          'circle-stroke-width': 2,
-        },
-      });
+      // Citizens and individual routes are intentionally not shown on the
+      // coordinator map — the crowd flow / shelter utilisation gives aggregate view.
 
       // ── Safe zone click handler ──────────────────────────────────────────
       map.on('click', 'safe-zones-fill', (e) => {
@@ -397,22 +349,6 @@ export default function CoordinatorMap({
     map.getSource('danger')?.setData(wsData?.danger_geojson ?? EMPTY_FC);
     map.getSource('fire-front')?.setData(wsData?.fire_front ?? EMPTY_FC);
     map.getSource('predicted')?.setData(wsData?.predicted_zone ?? EMPTY_FC);
-
-    // Routes — inject flashing flag into each feature
-    const routeFeatures = (wsData?.routes?.features ?? []).map((f) => ({
-      ...f,
-      properties: {
-        ...f.properties,
-        flashing: flashingSet?.has(f.properties?.citizen_id) ?? false,
-      },
-    }));
-    map.getSource('routes')?.setData({
-      type: 'FeatureCollection',
-      features: routeFeatures,
-    });
-
-    // Citizens
-    map.getSource('citizens')?.setData(wsData?.citizens ?? EMPTY_FC);
 
     // Safe zones — backend sends as 'safe_zones' (GeoJSON FC)
     map.getSource('safe-zones')?.setData(wsData?.safe_zones ?? EMPTY_FC);

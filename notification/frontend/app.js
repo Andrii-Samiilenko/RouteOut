@@ -8,8 +8,8 @@
  */
 
 // ── Config ─────────────────────────────────────────────────────────────────
-// Backend WebSocket and API live on the same origin as the served HTML
-const WS_URL = `ws://${location.host}/ws`;
+const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
+const WS_URL   = `${WS_PROTO}://${location.host}/ws`;
 const API_BASE = `${location.protocol}//${location.host}`;
 
 const DISASTER_CONFIG = {
@@ -24,15 +24,27 @@ let userMarker = null;
 let shelterMarker = null;
 let routeLine = null;
 let reconnectDelay = 500;
+let _currentPayload = null;   // saved for retry when user taps "get route" button
+let _currentAccent = '#C0392B';
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
-const statusDot   = document.getElementById('status-dot');
-const statusText  = document.getElementById('status-text');
-const alertModal  = document.getElementById('alert-modal');
-const dismissBtn  = document.getElementById('dismiss-btn');
+const statusDot    = document.getElementById('status-dot');
+const statusText   = document.getElementById('status-text');
+const alertModal   = document.getElementById('alert-modal');
+const dismissBtn   = document.getElementById('dismiss-btn');
+const routeStatus  = document.getElementById('route-status');
+const getRouteBtn  = document.getElementById('get-route-btn');
 
 dismissBtn.addEventListener('click', () => {
   alertModal.classList.add('hidden');
+});
+
+getRouteBtn.addEventListener('click', () => {
+  if (_currentPayload) {
+    getRouteBtn.classList.remove('visible');
+    setRouteStatus('Locating you…', 'warn');
+    fetchAndDrawRoute(_currentPayload, _currentAccent);
+  }
 });
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
@@ -75,6 +87,9 @@ function showAlert(payload) {
   const type = payload.disaster_type || 'fire';
   const cfg  = DISASTER_CONFIG[type] || DISASTER_CONFIG.fire;
 
+  _currentPayload = payload;
+  _currentAccent  = cfg.color;
+
   // Header
   document.getElementById('alert-header').style.background = cfg.bg;
   document.getElementById('alert-icon').textContent  = cfg.icon;
@@ -105,6 +120,15 @@ function showAlert(payload) {
   if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 500]);
 }
 
+function setRouteStatus(msg, state) {
+  routeStatus.textContent = msg;
+  routeStatus.className = `visible ${state || ''}`;
+}
+
+function hideRouteStatus() {
+  routeStatus.className = '';
+}
+
 function initOrUpdateMap(payload, accentColor) {
   const mapEl = document.getElementById('alert-map');
 
@@ -114,32 +138,13 @@ function initOrUpdateMap(payload, accentColor) {
       maxZoom: 19,
     }).addTo(map);
   } else {
-    // Remove old layers
     [userMarker, shelterMarker, routeLine].forEach((l) => l && map.removeLayer(l));
+    userMarker = null; shelterMarker = null; routeLine = null;
   }
 
-  const bounds = [];
-
-  // User location (blue pulsing dot)
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition((pos) => {
-      const { latitude: lat, longitude: lng } = pos.coords;
-      const userIcon = L.divIcon({
-        className: '',
-        html: `<div class="user-dot"><div class="user-dot-ring"></div></div>`,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10],
-      });
-      userMarker = L.marker([lat, lng], { icon: userIcon }).addTo(map)
-        .bindPopup('<b>Your location</b>').openPopup();
-      bounds.push([lat, lng]);
-      if (bounds.length > 1) map.fitBounds(bounds, { padding: [50, 50] });
-      else map.setView([lat, lng], 15);
-    });
-  }
-
-  // Shelter marker (green)
   const shelter = payload.shelter;
+
+  // Always place shelter marker immediately
   if (shelter) {
     const shelterIcon = L.divIcon({
       className: '',
@@ -150,28 +155,154 @@ function initOrUpdateMap(payload, accentColor) {
     shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon })
       .addTo(map)
       .bindPopup(`<b>${shelter.name}</b><br>Assigned evacuation shelter`);
-    bounds.push([shelter.lat, shelter.lon]);
+    map.setView([shelter.lat, shelter.lon], 14);
   }
 
-  // Route polyline (from backend path or direct straight line as fallback)
-  const path = payload.path;
-  if (path && path.length >= 2) {
-    const latlngs = path.map((p) => [p.lat, p.lng]);
-    routeLine = L.polyline(latlngs, {
-      color: accentColor,
-      weight: 5,
-      opacity: 0.9,
-      dashArray: null,
-    }).addTo(map);
-    latlngs.forEach((p) => bounds.push(p));
+  setRouteStatus('Locating you…', 'warn');
+  fetchAndDrawRoute(payload, accentColor);
+}
+
+// IP-based location fallback (used when browser blocks GPS on HTTP/LAN)
+async function _getIPLocation() {
+  try {
+    const r = await fetch('https://ip-api.com/json/', { cache: 'no-store' });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d.status === 'success' && d.lat && d.lon) return { lat: d.lat, lon: d.lon };
+  } catch {}
+  return null;
+}
+
+function fetchAndDrawRoute(payload, accentColor) {
+  const shelter = payload.shelter;
+
+  if (!navigator.geolocation) {
+    // No GPS API — try IP location immediately
+    setRouteStatus('GPS unavailable — trying network location…', 'warn');
+    _getIPLocation().then((loc) => {
+      if (loc) {
+        _onLocationReady(loc.lat, loc.lon, shelter, accentColor);
+      } else {
+        setRouteStatus('Could not determine your location', 'warn');
+        getRouteBtn.classList.add('visible');
+      }
+    });
+    return;
   }
 
-  // Fit all points into view
-  if (bounds.length >= 2) {
-    setTimeout(() => map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 }), 200);
-  } else if (shelter) {
-    map.setView([shelter.lat, shelter.lon], 15);
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude: userLat, longitude: userLon } = pos.coords;
+
+      // Sanity check: if GPS returns a position more than 100 km from Barcelona,
+      // it's a stale cached fix from another city — ignore it and ask again.
+      const BCN_LAT = 41.385, BCN_LON = 2.173;
+      const distKm = Math.sqrt(
+        ((userLat - BCN_LAT) * 111) ** 2 +
+        ((userLon - BCN_LON) * 85) ** 2
+      );
+      if (distKm > 100) {
+        setRouteStatus('GPS fix seems far away — retrying…', 'warn');
+        navigator.geolocation.getCurrentPosition(
+          (pos2) => _onLocationReady(pos2.coords.latitude, pos2.coords.longitude, shelter, accentColor),
+          async () => {
+            const loc = await _getIPLocation();
+            if (loc) { _onLocationReady(loc.lat, loc.lon, shelter, accentColor); return; }
+            setRouteStatus('Allow location to see your route', 'warn');
+            getRouteBtn.classList.add('visible');
+          },
+          { timeout: 15000, maximumAge: 0, enableHighAccuracy: false }
+        );
+        return;
+      }
+
+      _onLocationReady(userLat, userLon, shelter, accentColor);
+    },
+    async (err) => {
+      // GPS denied or blocked (common on HTTP/LAN) — fall back to IP location
+      setRouteStatus('GPS blocked — trying network location…', 'warn');
+      const loc = await _getIPLocation();
+      if (loc) {
+        _onLocationReady(loc.lat, loc.lon, shelter, accentColor);
+        return;
+      }
+      if (shelter) {
+        setRouteStatus('Allow location to see your route', 'warn');
+      } else {
+        hideRouteStatus();
+      }
+      getRouteBtn.classList.add('visible');
+    },
+    // enableHighAccuracy: false — avoids iOS Safari silently blocking GPS on HTTP
+    { timeout: 12000, maximumAge: 0, enableHighAccuracy: false },
+  );
+}
+
+function _onLocationReady(userLat, userLon, shelter, accentColor) {
+  // Place / update user marker
+  if (userMarker) map.removeLayer(userMarker);
+  const userIcon = L.divIcon({
+    className: '',
+    html: `<div class="user-dot"><div class="user-dot-ring"></div></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  });
+  userMarker = L.marker([userLat, userLon], { icon: userIcon }).addTo(map);
+
+  if (!shelter) {
+    map.setView([userLat, userLon], 15);
+    hideRouteStatus();
+    return;
   }
+
+  // Distance user→shelter in km
+  const dKm = Math.sqrt(
+    ((userLat - shelter.lat) * 111) ** 2 +
+    ((userLon - shelter.lon) * 85) ** 2
+  );
+  if (dKm > 50) {
+    // Position too far from shelter — GPS still stale, just show shelter
+    setRouteStatus('Could not confirm your location — showing shelter only', 'warn');
+    setTimeout(hideRouteStatus, 5000);
+    map.setView([shelter.lat, shelter.lon], 14);
+    return;
+  }
+
+  setRouteStatus('Calculating route…', 'warn');
+
+  const url = `${API_BASE}/route?from_lat=${userLat}&from_lon=${userLon}&to_lat=${shelter.lat}&to_lon=${shelter.lon}`;
+  fetch(url)
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((data) => {
+      if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+      const path = data.path;
+      if (path && path.length >= 2) {
+        const latlngs = path.map((p) => [p.lat, p.lng]);
+        routeLine = L.polyline(latlngs, { color: accentColor, weight: 5, opacity: 0.9 }).addTo(map);
+        const allBounds = [[userLat, userLon], [shelter.lat, shelter.lon], ...latlngs];
+        setTimeout(() => map.fitBounds(allBounds, { padding: [50, 50], maxZoom: 16 }), 200);
+        setRouteStatus(`Route ready — ${data.waypoints} waypoints`, 'ok');
+        setTimeout(hideRouteStatus, 4000);
+      } else {
+        _drawStraightLine(userLat, userLon, shelter, accentColor);
+      }
+      getRouteBtn.classList.remove('visible');
+    })
+    .catch(() => {
+      _drawStraightLine(userLat, userLon, shelter, accentColor);
+      getRouteBtn.classList.remove('visible');
+    });
+}
+
+function _drawStraightLine(userLat, userLon, shelter, accentColor) {
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  routeLine = L.polyline(
+    [[userLat, userLon], [shelter.lat, shelter.lon]],
+    { color: accentColor, weight: 4, opacity: 0.7, dashArray: '8 6' }
+  ).addTo(map);
+  setTimeout(() => map.fitBounds([[userLat, userLon], [shelter.lat, shelter.lon]], { padding: [50, 50] }), 200);
+  setRouteStatus('Showing direct path (road route unavailable)', 'warn');
+  setTimeout(hideRouteStatus, 5000);
 }
 
 // ── Service Worker + Web Push ───────────────────────────────────────────────

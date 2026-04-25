@@ -5,7 +5,6 @@ import MapErrorBoundary from '@/components/Map/MapErrorBoundary';
 import ControlPanel from '@/components/Dashboard/ControlPanel';
 import Statistics from '@/components/Dashboard/Statistics';
 import NotificationFeed from '@/components/Dashboard/NotificationFeed';
-import EvacuationChart from '@/components/Dashboard/EvacuationChart';
 
 /**
  * Supervisor dashboard.
@@ -21,9 +20,6 @@ import EvacuationChart from '@/components/Dashboard/EvacuationChart';
 export default function Coordinator() {
   const { data: wsData, connected } = useWebSocket();
   const [error, setError] = useState(null);
-
-  // ── Chart history ─────────────────────────────────────────────────────────
-  const [chartSnapshot, setChartSnapshot] = useState(null);
 
   // ── Route flash detection ─────────────────────────────────────────────────
   const prevVersionsRef = useRef({});
@@ -46,20 +42,6 @@ export default function Coordinator() {
         setFlashingCitizens((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n; });
       }, 2000);
     }
-  }, [wsData]);
-
-  // ── Chart snapshot each tick ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!wsData?.scenario?.active) return;
-    const stats = wsData.statistics || {};
-    const total = (stats.evacuating ?? 0) + (stats.reached_safety ?? 0);
-    if (total === 0) return;
-    setChartSnapshot({
-      elapsed:    Math.round(wsData.scenario.elapsed_minutes ?? 0),
-      reached:    stats.reached_safety ?? 0,
-      evacuating: stats.evacuating ?? 0,
-      total,
-    });
   }, [wsData]);
 
   // ── Error auto-clear ──────────────────────────────────────────────────────
@@ -93,7 +75,6 @@ export default function Coordinator() {
     setPendingShelters([]);
     setDrawMode(null);
     setShelterDialog(null);
-    setChartSnapshot(null);
     prevVersionsRef.current = {};
   }
 
@@ -224,9 +205,6 @@ export default function Coordinator() {
 
         {/* Statistics — always show, dims when inactive */}
         <Statistics stats={stats} total={totalCit} active={scenario.active} />
-
-        {/* Evacuation progress chart */}
-        {chartSnapshot && <EvacuationChart snapshot={chartSnapshot} />}
 
         {/* Rerouting event feed */}
         {notifications.length > 0 && (

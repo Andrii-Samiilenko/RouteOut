@@ -6,20 +6,25 @@ export default defineConfig({
   plugins: [react()],
 
   server: {
-    // Bind to all interfaces so a phone on the same WiFi can reach the dev server
+    // Bind to all interfaces for phone/network testing
     host: true,
     port: 3000,
 
     proxy: {
-      // REST API: /api/... → http://localhost:8000/...
+      // Proxies /api/something to http://127.0.0.1:8000/something
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ''),
       },
-      // Dashboard WebSocket → dashboard backend (port 8000)
+      // Proxies /simulation/something to http://127.0.0.1:8000/simulation/something
+      '/simulation': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+      // WebSocket support
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: 'ws://127.0.0.1:8000',
         ws: true,
         changeOrigin: true,
       },
@@ -28,8 +33,6 @@ export default defineConfig({
 
   resolve: {
     alias: {
-      // fileURLToPath + import.meta.url is the ESM-safe equivalent of
-      // path.resolve(__dirname, './src') — works on all Node versions
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },

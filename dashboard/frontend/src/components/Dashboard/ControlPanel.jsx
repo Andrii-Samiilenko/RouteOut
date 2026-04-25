@@ -76,12 +76,17 @@ export default function ControlPanel({
     try {
       await launchSimulation({
         zone_polygon:   zonePolygon,
-        shelters:       usePresets ? [] : pendingShelters,  // [] = use backend presets
+        shelters:       usePresets ? [] : pendingShelters,
         time_available: timeAvailable,
         disaster_type:  disasterType,
       });
     } catch (e) {
-      onError?.(e.message);
+      const msg = e.message || '';
+      if (msg.includes('already active')) {
+        onError?.('Simulation already running — click Reset first, then Launch again.');
+      } else {
+        onError?.(msg);
+      }
     } finally {
       setLoading(null);
     }

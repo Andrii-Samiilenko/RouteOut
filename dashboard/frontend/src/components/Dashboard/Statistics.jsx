@@ -50,10 +50,10 @@ export default function Statistics({ stats, total }) {
       border: 'border-amber-900/40',
     },
     {
-      label: 'Reroutes',
-      value: s.routes_recalculated ?? '—',
-      accent: 'text-sky-400',
-      border: 'border-sky-900/40',
+      label: 'Reached Safety',
+      value: s.reached_safety ?? '—',
+      accent: 'text-emerald-400',
+      border: 'border-emerald-900/40',
     },
     {
       label: 'Est. Clearance',

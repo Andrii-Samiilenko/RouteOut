@@ -6,6 +6,7 @@ Endpoints:
   POST /subscribe           — PWA registers its Web Push subscription
   GET  /vapid-public-key    — PWA fetches the VAPID public key for push registration
   GET  /qr                  — prints the service frontend URL to terminal
+  GET  /route               — compute walking route from user GPS to shelter
   WS   /ws                  — real-time alert delivery to all connected PWA clients
   GET  /                    — serves the PWA (static index.html)
 
@@ -23,11 +24,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -46,6 +48,87 @@ logger = logging.getLogger(__name__)
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "9000"))
+
+# ---------------------------------------------------------------------------
+# Graph (cached after first load)
+# ---------------------------------------------------------------------------
+
+_graph = None
+_graph_node_array: Optional[tuple] = None  # (np.ndarray of [lat,lon], list of node ids)
+
+_GRAPH_CANDIDATES = [
+    Path(__file__).parent.parent.parent / "dashboard" / "data" / "barcelona_graph.graphml",
+    Path(__file__).parent.parent.parent.parent / "dashboard" / "data" / "barcelona_graph.graphml",
+    Path("/Users/andrii_samiilenko/Desktop/HackUPC/RouteOut/dashboard/data/barcelona_graph.graphml"),
+]
+
+
+def _load_graph():
+    global _graph, _graph_node_array
+    if _graph is not None:
+        return _graph
+    import networkx as nx
+    for candidate in _GRAPH_CANDIDATES:
+        if candidate.exists():
+            logger.info("Loading road graph from %s", candidate)
+            g = nx.read_graphml(str(candidate))
+            coords, nodes = [], []
+            for nid, data in g.nodes(data=True):
+                try:
+                    coords.append([float(data["y"]), float(data["x"])])
+                    nodes.append(nid)
+                except (KeyError, ValueError):
+                    pass
+            _graph = g
+            _graph_node_array = (np.array(coords), nodes)
+            logger.info("Graph loaded: %d nodes", g.number_of_nodes())
+            return g
+    logger.warning("barcelona_graph.graphml not found — /route will return straight line")
+    return None
+
+
+def _nearest_node(lat: float, lon: float):
+    if _graph_node_array is None:
+        return None
+    arr, nodes = _graph_node_array
+    idx = int(np.argmin(((arr - [lat, lon]) ** 2).sum(axis=1)))
+    return nodes[idx]
+
+
+def _compute_route(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> List[Dict[str, float]]:
+    """Return list of {lat, lng} waypoints for the walking route."""
+    g = _load_graph()
+    if g is None:
+        # Straight line fallback
+        return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
+
+    import networkx as nx
+    src = _nearest_node(from_lat, from_lon)
+    dst = _nearest_node(to_lat, to_lon)
+    if src is None or dst is None or src == dst:
+        return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
+
+    def _edge_length(u, v, data):
+        try:
+            return float(data.get("length", 1))
+        except (TypeError, ValueError):
+            return 1.0
+
+    try:
+        path_nodes = nx.shortest_path(g, src, dst, weight=_edge_length)
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
+
+    waypoints = []
+    for nid in path_nodes:
+        data = g.nodes[nid]
+        try:
+            waypoints.append({"lat": float(data["y"]), "lng": float(data["x"])})
+        except (KeyError, ValueError):
+            pass
+    if not waypoints:
+        return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
+    return waypoints
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +231,22 @@ async def qr_endpoint():
 
 
 # ---------------------------------------------------------------------------
+# Route computation
+# ---------------------------------------------------------------------------
+
+@app.get("/route")
+async def get_route(
+    from_lat: float = Query(...),
+    from_lon: float = Query(...),
+    to_lat: float = Query(...),
+    to_lon: float = Query(...),
+):
+    """Return walking route waypoints from user GPS to shelter."""
+    path = _compute_route(from_lat, from_lon, to_lat, to_lon)
+    return {"path": path, "waypoints": len(path)}
+
+
+# ---------------------------------------------------------------------------
 # WebSocket
 # ---------------------------------------------------------------------------
 
@@ -177,6 +276,7 @@ async def ws_handler(websocket: WebSocket):
 
 
 async def _broadcast(data: Dict[str, Any]) -> None:
+    global ws_connections
     msg = json.dumps({"type": "alert", "payload": data})
     dead: set = set()
     for ws in list(ws_connections):
@@ -198,7 +298,49 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 # Entry point
 # ---------------------------------------------------------------------------
 
+SSL_CERT = os.getenv("SSL_CERT", "/tmp/notif_cert.pem")
+SSL_KEY  = os.getenv("SSL_KEY",  "/tmp/notif_key.pem")
+
+
+def _get_local_ip() -> str:
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def _generate_cert(cert_path: str, key_path: str, ip: str) -> bool:
+    try:
+        import subprocess
+        result = subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", key_path, "-out", cert_path,
+            "-days", "1", "-nodes",
+            "-subj", "/CN=routeout",
+            "-addext", f"subjectAltName=IP:{ip},IP:127.0.0.1,DNS:localhost",
+        ], capture_output=True, timeout=15)
+        return result.returncode == 0
+    except Exception as e:
+        logger.warning("Could not generate SSL cert: %s", e)
+        return False
+
+
 if __name__ == "__main__":
     maybe_generate_keys()
-    logger.info("Starting notification service on %s:%d", HOST, PORT)
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=False)
+    local_ip = _get_local_ip()
+    logger.info("Detected local IP: %s", local_ip)
+
+    ssl_kwargs = {}
+    if _generate_cert(SSL_CERT, SSL_KEY, local_ip):
+        ssl_kwargs = {"ssl_certfile": SSL_CERT, "ssl_keyfile": SSL_KEY}
+        logger.info("Starting notification service on https://%s:%d", local_ip, PORT)
+        logger.info(">>> Phone URL: https://%s:%d  (accept the cert warning)", local_ip, PORT)
+    else:
+        logger.warning("SSL cert generation failed — starting on HTTP (geolocation blocked on LAN)")
+        logger.info("Starting notification service on http://%s:%d", local_ip, PORT)
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=False, **ssl_kwargs)
