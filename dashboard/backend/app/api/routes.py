@@ -193,13 +193,18 @@ async def get_preset_shelters(disaster_type: str):
 # ---------------------------------------------------------------------------
 
 async def _forward_alert(payload: AlertForwardPayload) -> bool:
-    url = f"{NOTIFICATION_SERVICE_URL}/trigger-alert"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(url, json=payload.model_dump())
-            resp.raise_for_status()
-            logger.info("Alert forwarded to notification service: %s", resp.status_code)
-            return True
-    except Exception as exc:
-        logger.warning("Could not reach notification service at %s: %s", url, exc)
-        return False
+    # Try https first (notification service runs with self-signed cert), fall back to http
+    for url in [
+        f"https://localhost:9000/trigger-alert",
+        f"http://localhost:9000/trigger-alert",
+        f"{NOTIFICATION_SERVICE_URL}/trigger-alert",
+    ]:
+        try:
+            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+                resp = await client.post(url, json=payload.model_dump())
+                resp.raise_for_status()
+                logger.info("Alert forwarded to notification service via %s: %s", url, resp.status_code)
+                return True
+        except Exception as exc:
+            logger.warning("Could not reach notification service at %s: %s", url, exc)
+    return False
