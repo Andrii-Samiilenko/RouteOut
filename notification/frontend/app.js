@@ -113,27 +113,27 @@ function setStatus(state) {
 
 // ── Geometry helpers ───────────────────────────────────────────────────────
 
-function _pointToSegmentDistKm(px, py, ax, ay, bx, by) {
-  const dxSeg = bx - ax, dySeg = by - ay;
-  const lenSq = dxSeg * dxSeg + dySeg * dySeg;
-  let t = lenSq > 0
-    ? Math.max(0, Math.min(1, ((px - ax) * dxSeg + (py - ay) * dySeg) / lenSq))
-    : 0;
-  const cx = ax + t * dxSeg, cy = ay + t * dySeg;
-  return Math.sqrt(((px - cx) * 85) ** 2 + ((py - cy) * 111) ** 2);
-}
-
-function _escapeTimeMinutes(lat, lon, zoneGeoJson) {
-  if (!zoneGeoJson) return 0;
+function _snapToZoneBoundary(lat, lon, zoneGeoJson) {
+  // Find the nearest vertex of the zone polygon to (lat, lon).
+  // Used to snap exit-point routing destinations back inside the road graph.
+  if (!zoneGeoJson) return null;
   const geom = zoneGeoJson.geometry ?? zoneGeoJson;
   const ring = geom.coordinates?.[0];
-  if (!ring || ring.length < 2) return 0;
-  let minDistKm = Infinity;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const d = _pointToSegmentDistKm(lon, lat, ring[j][0], ring[j][1], ring[i][0], ring[i][1]);
-    if (d < minDistKm) minDistKm = d;
+  if (!ring || ring.length < 2) return null;
+  let best = null, bestDist = Infinity;
+  for (const [vlon, vlat] of ring) {
+    const d = ((vlat - lat) * 111) ** 2 + ((vlon - lon) * 85) ** 2;
+    if (d < bestDist) { bestDist = d; best = { lat: vlat, lon: vlon }; }
   }
-  return (minDistKm / 4.5) * 60;
+  return best;
+}
+
+function _walkingMinutes(fromLat, fromLon, toLat, toLon) {
+  // Haversine distance in km, then walking at 4.5 km/h with 1.35× road detour factor
+  const dlat = (toLat - fromLat) * 111;
+  const dlon = (toLon - fromLon) * 85;
+  const distKm = Math.sqrt(dlat * dlat + dlon * dlon);
+  return Math.round((distKm * 1.35 / 4.5) * 60);
 }
 
 function _nearestShelter(userLat, userLon, shelters) {
@@ -249,26 +249,10 @@ function initOrUpdateMap(payload, accentColor) {
     userMarker = null; shelterMarker = null; routeLine = null;
   }
 
-  const shelter = payload.shelter;
-
-  if (shelter) {
-    // SVG pin marker for shelter
-    const shelterIcon = L.divIcon({
-      className: '',
-      html: `<div class="shelter-pin-wrap">
-        <svg width="22" height="28" viewBox="0 0 22 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M11 1C6.6 1 3 4.6 3 9C3 14.5 11 27 11 27C11 27 19 14.5 19 9C19 4.6 15.4 1 11 1Z"
-                fill="${accentColor}" stroke="white" stroke-width="1.5"/>
-          <circle cx="11" cy="9" r="3" fill="white" opacity="0.9"/>
-        </svg>
-        <div class="shelter-pin-label">${shelter.name}</div>
-      </div>`,
-      iconSize: [80, 46],
-      iconAnchor: [11, 28],
-    });
-    shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon }).addTo(map);
-    map.setView([shelter.lat, shelter.lon], 14);
-  }
+  // Don't place a shelter marker here — we don't know the user's location yet.
+  // The correct nearest-exit marker is placed in _onLocationReady after GPS resolves.
+  // Set a default Barcelona-area view while we wait for location.
+  map.setView([41.385, 2.173], 13);
 
   setRouteStatus('Locating you…', 'warn');
   fetchAndDrawRoute(payload, accentColor);
@@ -286,7 +270,10 @@ async function _getIPLocation() {
 }
 
 function fetchAndDrawRoute(payload, accentColor) {
-  const shelter = payload.shelter;
+  // Do NOT use payload.shelter here — it was computed from the zone centroid, not the
+  // user's actual position. Pass null so _onLocationReady picks the nearest exit to the
+  // user's real GPS coordinates instead.
+  const shelter = null;
 
   if (!navigator.geolocation) {
     setRouteStatus('GPS unavailable — trying network location…', 'warn');
@@ -349,80 +336,95 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
   const shelterNameEl = document.getElementById('shelter-name');
   const exitTimeEl    = document.getElementById('shelter-exit-time');
 
-  // Check user is within the evacuation zone
-  if (zone && !_pointInPolygon(userLat, userLon, zone)) {
-    shelterBadge.classList.remove('visible');
-    setRouteStatus('You are outside the evacuation zone — no action needed', 'ok');
-    map.setView([userLat, userLon], 14);
-    setTimeout(hideRouteStatus, 6000);
-    return;
-  }
-
-  // User is inside zone — compute escape time and show badge
-  const exitMin = zone ? Math.round(_escapeTimeMinutes(userLat, userLon, zone)) : null;
-
-  // Filter out zone exit-point shelters (id starts with "exit-") for real shelter selection
-  const realShelters = (_currentPayload?.shelters || [])
-    .filter(s => !s.name?.startsWith('Zone Exit'));
-  const nearest = _nearestShelter(userLat, userLon, realShelters.length > 0 ? realShelters : _currentPayload?.shelters);
-  if (nearest) {
-    shelter = nearest;
-    if (shelterNameEl) shelterNameEl.textContent = shelter.name;
-    if (exitTimeEl && exitMin !== null && exitMin > 0) {
-      exitTimeEl.textContent = `Est. zone exit: ~${exitMin} min walk`;
-      exitTimeEl.style.display = 'block';
-    }
-    if (shelterBadge) shelterBadge.classList.add('visible');
-    // Move shelter marker to nearest shelter
-    if (shelterMarker) map.removeLayer(shelterMarker);
-    const shelterIcon = L.divIcon({
-      className: '',
-      html: `<div class="shelter-pin-wrap">
-        <svg width="22" height="28" viewBox="0 0 22 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M11 1C6.6 1 3 4.6 3 9C3 14.5 11 27 11 27C11 27 19 14.5 19 9C19 4.6 15.4 1 11 1Z"
-                fill="${accentColor}" stroke="white" stroke-width="1.5"/>
-          <circle cx="11" cy="9" r="3" fill="white" opacity="0.9"/>
-        </svg>
-        <div class="shelter-pin-label">${shelter.name}</div>
-      </div>`,
-      iconSize: [80, 46], iconAnchor: [11, 28],
-    });
-    shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon }).addTo(map);
-  }
-
+  // Place user dot immediately
   if (userMarker) map.removeLayer(userMarker);
   const userIcon = L.divIcon({
     className: '',
     html: `<div class="user-dot"><div class="user-dot-ring"></div></div>`,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
+    iconSize: [18, 18], iconAnchor: [9, 9],
   });
   userMarker = L.marker([userLat, userLon], { icon: userIcon }).addTo(map);
+  map.setView([userLat, userLon], 14);
 
-  if (!shelter) {
-    map.setView([userLat, userLon], 15);
-    hideRouteStatus();
+  // Check user is within the evacuation zone
+  if (zone && !_pointInPolygon(userLat, userLon, zone)) {
+    shelterBadge.classList.remove('visible');
+    setRouteStatus('You are outside the evacuation zone — no action needed', 'ok');
+    setTimeout(hideRouteStatus, 6000);
     return;
   }
 
-  const dKm = Math.sqrt(
-    ((userLat - shelter.lat) * 111) ** 2 +
-    ((userLon - shelter.lon) * 85) ** 2
-  );
-  if (dKm > 50) {
-    setRouteStatus('Could not confirm your location — showing shelter only', 'warn');
-    setTimeout(hideRouteStatus, 5000);
-    map.setView([shelter.lat, shelter.lon], 14);
-    return;
+  // Ask the dashboard backend for the tier-selected best shelter for THIS user's
+  // actual GPS coordinates. This uses the same 6-tier logic as the simulator,
+  // including elapsed time, hazard proximity, and capacity — not just nearest distance.
+  setRouteStatus('Finding best shelter…', 'warn');
+  fetch(`${API_BASE}/best-shelter?lat=${userLat}&lon=${userLon}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(best => {
+      // Fall back to nearest from the shelters list if the endpoint is unavailable
+      const allShelters = _currentPayload?.shelters || [];
+      const realShelters = allShelters.filter(s => !s.id?.startsWith('exit-') && !s.name?.startsWith('Zone Exit'));
+      const fallback = _nearestShelter(userLat, userLon, realShelters.length ? realShelters : allShelters);
+      const chosen = best || fallback || _currentPayload?.shelter;
+      if (!chosen) { hideRouteStatus(); return; }
+
+      _drawShelterAndRoute(userLat, userLon, chosen, accentColor);
+    })
+    .catch(() => {
+      // Network error — fall back to nearest real shelter
+      const allShelters = _currentPayload?.shelters || [];
+      const realShelters = allShelters.filter(s => !s.id?.startsWith('exit-') && !s.name?.startsWith('Zone Exit'));
+      const fallback = _nearestShelter(userLat, userLon, realShelters.length ? realShelters : allShelters);
+      if (fallback) _drawShelterAndRoute(userLat, userLon, fallback, accentColor);
+      else hideRouteStatus();
+    });
+}
+
+function _drawShelterAndRoute(userLat, userLon, shelter, accentColor) {
+  const shelterBadge  = document.getElementById('shelter-badge');
+  const shelterNameEl = document.getElementById('shelter-name');
+  const exitTimeEl    = document.getElementById('shelter-exit-time');
+
+  // Update badge
+  const walkMin = _walkingMinutes(userLat, userLon, shelter.lat, shelter.lon);
+  if (shelterNameEl) shelterNameEl.textContent = shelter.name;
+  if (exitTimeEl) {
+    exitTimeEl.textContent = walkMin > 0 ? `~${walkMin} min walk` : '';
+    exitTimeEl.style.display = walkMin > 0 ? 'block' : 'none';
   }
+  if (shelterBadge) shelterBadge.classList.add('visible');
+
+  // Place shelter marker
+  if (shelterMarker) map.removeLayer(shelterMarker);
+  const shelterIcon = L.divIcon({
+    className: '',
+    html: `<div class="shelter-pin-wrap">
+      <svg width="22" height="28" viewBox="0 0 22 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M11 1C6.6 1 3 4.6 3 9C3 14.5 11 27 11 27C11 27 19 14.5 19 9C19 4.6 15.4 1 11 1Z"
+              fill="${accentColor}" stroke="white" stroke-width="1.5"/>
+        <circle cx="11" cy="9" r="3" fill="white" opacity="0.9"/>
+      </svg>
+      <div class="shelter-pin-label">${shelter.name}</div>
+    </div>`,
+    iconSize: [80, 46], iconAnchor: [11, 28],
+  });
+  shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon }).addTo(map);
 
   setRouteStatus('Calculating route…', 'warn');
 
-  // Include danger origin so route avoids the hazard source
   const danger = _currentPayload?.danger_origin;
   const dangerParams = danger ? `&danger_lat=${danger.lat}&danger_lon=${danger.lon}` : '';
-  const url = `${API_BASE}/route?from_lat=${userLat}&from_lon=${userLon}&to_lat=${shelter.lat}&to_lon=${shelter.lon}${dangerParams}`;
 
+  // For exit points (outside zone boundary), snap the routing destination to the
+  // nearest zone polygon vertex so A* ends at a valid road node inside the graph.
+  const isExit = shelter.id?.startsWith('exit-') || shelter.name?.startsWith('Zone Exit');
+  let routeToLat = shelter.lat, routeToLon = shelter.lon;
+  if (isExit) {
+    const snap = _snapToZoneBoundary(shelter.lat, shelter.lon, _currentPayload?.zone_polygon);
+    if (snap) { routeToLat = snap.lat; routeToLon = snap.lon; }
+  }
+
+  const url = `${API_BASE}/route?from_lat=${userLat}&from_lon=${userLon}&to_lat=${routeToLat}&to_lon=${routeToLon}${dangerParams}`;
   _fetchRouteWithRetry(url, userLat, userLon, shelter, accentColor, 0);
 }
 

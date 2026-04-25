@@ -130,6 +130,7 @@ def _handle_citizen_register(engine: Any, data: dict) -> None:
     target = sz_selector.select_zone_with_threshold(
         lat, lon, engine.safe_zones, engine.danger_polygon,
         engine.zone_polygon, engine.scenario.time_available,
+        elapsed_minutes=engine.scenario.elapsed_minutes,
     )
     if target is None:
         return

@@ -139,17 +139,30 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
 
     # Forward alert to notification service
     all_shelters = [
-        {"name": s.name, "lat": s.lat, "lon": s.lon, "capacity": s.capacity}
-        for s in shelters_raw
+        {"id": s.id, "name": s.name, "lat": s.lat, "lon": s.lon, "capacity": s.capacity}
+        for s in engine.shelters  # use engine.shelters which includes exit points
     ]
+
+    # Pick the best shelter from the zone centroid using the same tier-based logic
+    # the simulator uses — this ensures the phone gets a smart default, not just
+    # the first shelter in the list (which is often an internal hospital).
+    best_shelter_for_alert = _pick_best_alert_shelter(engine, req.time_available)
+    best_shelter_dict = (
+        {"id": best_shelter_for_alert.id, "name": best_shelter_for_alert.name,
+         "lat": best_shelter_for_alert.lat, "lon": best_shelter_for_alert.lon,
+         "capacity": best_shelter_for_alert.capacity}
+        if best_shelter_for_alert else (all_shelters[0] if all_shelters else None)
+    )
+
     alert = AlertForwardPayload(
         disaster_type=req.disaster_type.value,
         message=_DISASTER_MESSAGES[req.disaster_type],
-        shelter=all_shelters[0] if all_shelters else None,  # fallback for old clients
+        shelter=best_shelter_dict,
         shelters=all_shelters,
         path=[],
         danger_origin=_DANGER_ORIGINS.get(req.disaster_type.value),
         zone_polygon=req.zone_polygon,
+        time_available=req.time_available,
     )
     # Broadcast initial state to connected WS clients
     from app.api.websocket import broadcast_state
@@ -215,9 +228,72 @@ async def get_preset_shelters(disaster_type: str):
     return {"disaster_type": disaster_type, "shelters": get_shelters(disaster_type)}
 
 
+@router.get("/simulation/best-shelter")
+async def get_best_shelter(lat: float, lon: float):
+    """
+    Return the tier-selected best shelter for a citizen at (lat, lon).
+    Called by the evacuee PWA after it gets the user's GPS fix so shelter
+    selection uses real position rather than zone centroid.
+    """
+    engine = _get_engine()
+    if not engine.scenario.active or not engine.safe_zones:
+        raise HTTPException(503, "No active simulation")
+
+    from app.core.safe_zones import select_zone_with_threshold
+    best = select_zone_with_threshold(
+        lat, lon,
+        engine.safe_zones,
+        engine.danger_polygon,
+        engine.zone_polygon,
+        engine.scenario.time_available,
+        elapsed_minutes=engine.scenario.elapsed_minutes,
+    )
+    if best is None:
+        raise HTTPException(404, "No suitable shelter found")
+
+    return {
+        "id":       best.id,
+        "name":     best.name,
+        "lat":      best.lat,
+        "lon":      best.lon,
+        "capacity": best.capacity,
+        "is_exit":  best.id.startswith("exit-"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _pick_best_alert_shelter(engine: Any, time_available: int) -> Optional[Any]:
+    """
+    Use the same tier-based selector to pick the best shelter from the zone centroid.
+    This is what gets sent to the phone app as the default shelter recommendation.
+    Prefers external shelters and exit points over internal ones.
+    """
+    if not engine.safe_zones or engine.zone_polygon is None:
+        return None
+    try:
+        from app.engine import _polygon_centroid
+        from app.core.safe_zones import select_zone_with_threshold
+        centroid_lat, centroid_lon = _polygon_centroid(engine.zone_polygon)
+        best = select_zone_with_threshold(
+            centroid_lat, centroid_lon,
+            engine.safe_zones,
+            engine.danger_polygon,
+            engine.zone_polygon,
+            time_available,
+            elapsed_minutes=0.0,
+        )
+        # Find corresponding ShelterMarker for the dict conversion
+        if best:
+            for s in engine.shelters:
+                if s.id == best.id:
+                    return s
+    except Exception as exc:
+        logger.warning("Could not pick best alert shelter: %s", exc)
+    return None
+
 
 async def _forward_alert(payload: AlertForwardPayload) -> bool:
     for url in [

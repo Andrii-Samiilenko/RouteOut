@@ -151,13 +151,11 @@ class SimulationEngine:
             from app.core.fire_spread import FireSpreadSimulator
             self.fire_simulator = FireSpreadSimulator(
                 vegetation_zones=_VEGETATION_ZONES,
-                spread_rate="high",   # faster spread = better demo visibility
+                spread_rate="high",
             )
-            # Ignite at the Collserola ridge (high-veg zone), ignoring user origin
-            # for fire so the demo always looks good — forest fire spreading downhill
+            # Ignite at the Collserola ridge (high-veg zone)
             fire_lat = 41.432
             fire_lon = 2.126
-            # Ignite multiple points along ridge for an impressive start
             for dlat, dlon in [(0, 0), (0.008, -0.005), (-0.006, 0.007), (0.012, 0.003)]:
                 self.fire_simulator.ignite(fire_lat + dlat, fire_lon + dlon)
             # Pre-run 3 ticks so fire is clearly visible from the start
@@ -183,6 +181,9 @@ class SimulationEngine:
         elif disaster_type == DisasterType.tsunami:
             from app.core.tsunami_model import TsunamiModel
             self.tsunami_model = TsunamiModel()
+            # Pre-advance 2 ticks so the wave is already on the beach when the
+            # dashboard loads — not an empty map on tick 0.
+            self.tsunami_model.advance()
             self.tsunami_model.advance()
             self.danger_polygon = self.tsunami_model.get_inundation_geojson()
             self.predicted_polygon = self.tsunami_model.get_predicted_geojson()
@@ -227,6 +228,7 @@ class SimulationEngine:
             target = sz_selector.select_zone_with_threshold(
                 lat, lon, self.safe_zones, self.danger_polygon,
                 self.zone_polygon, self.scenario.time_available,
+                elapsed_minutes=0.0,
             )
             if target is None:
                 continue

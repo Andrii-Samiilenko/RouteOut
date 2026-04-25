@@ -160,6 +160,9 @@ def _compute_route(
             pass
     if not waypoints:
         return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
+    # Append the exact requested destination as the final waypoint so the line
+    # visually terminates at the marker, not at the nearest graph node.
+    waypoints.append({"lat": to_lat, "lng": to_lon})
     return waypoints
 
 
@@ -168,13 +171,14 @@ def _compute_route(
 # ---------------------------------------------------------------------------
 
 class AlertPayload(BaseModel):
-    disaster_type: str
-    message:       str
-    shelter:       Dict[str, Any] | None       = None
-    shelters:      List[Dict[str, Any]]        = []     # all shelters — phone picks nearest
-    path:          List[Dict[str, float]]       = []
-    danger_origin: Dict[str, float] | None     = None
-    zone_polygon:  Dict[str, Any] | None       = None
+    disaster_type:  str
+    message:        str
+    shelter:        Dict[str, Any] | None       = None
+    shelters:       List[Dict[str, Any]]        = []
+    path:           List[Dict[str, float]]       = []
+    danger_origin:  Dict[str, float] | None     = None
+    zone_polygon:   Dict[str, Any] | None       = None
+    time_available: int                         = 60
 
 
 class PushSubscription(BaseModel):
@@ -280,6 +284,111 @@ async def clear_alert():
     global last_alert
     last_alert = None
     return {"status": "cleared"}
+
+
+@app.get("/best-shelter")
+async def best_shelter(lat: float = Query(...), lon: float = Query(...)):
+    """
+    Return the tier-selected best shelter for a citizen at (lat, lon).
+    Uses the same 6-tier decision logic as the dashboard simulator, applied
+    to the shelter list and zone polygon from the last received alert.
+    Runs entirely within the notification server — no dashboard proxy needed.
+    """
+    if not last_alert:
+        return JSONResponse({"error": "no_alert"}, status_code=503)
+
+    shelters = last_alert.get("shelters") or []
+    zone_polygon = last_alert.get("zone_polygon")
+
+    if not shelters:
+        return JSONResponse({"error": "no_shelters"}, status_code=404)
+
+    time_available = float(last_alert.get("time_available", 60))
+    result = await asyncio.to_thread(_select_best_shelter, lat, lon, shelters, zone_polygon, time_available)
+    if result is None:
+        return JSONResponse({"error": "no_shelter"}, status_code=404)
+    return result
+
+
+def _select_best_shelter(
+    citizen_lat: float,
+    citizen_lon: float,
+    shelters: list,
+    zone_polygon_geojson,
+    time_available: float = 60.0,
+):
+    """
+    Lightweight 6-tier shelter selector — mirrors safe_zones.select_zone_with_threshold.
+    Runs in a thread (CPU-bound shapely work).
+    """
+    import math
+    try:
+        from shapely.geometry import Point, shape
+    except ImportError:
+        # Shapely unavailable — fall back to nearest real shelter
+        real = [s for s in shelters if not s.get("id", "").startswith("exit-")]
+        return min(real or shelters, key=lambda s: _dist2(citizen_lat, citizen_lon, s["lat"], s["lon"]), default=None)
+
+    WALK_KMH = 4.5
+    DETOUR   = 1.35
+
+    def travel_min(s):
+        d = math.sqrt(((s["lat"] - citizen_lat) * 111) ** 2 + ((s["lon"] - citizen_lon) * 85) ** 2)
+        return (d * DETOUR / WALK_KMH) * 60
+
+    # Parse zone polygon
+    zone_shape = None
+    if zone_polygon_geojson:
+        try:
+            geom = zone_polygon_geojson.get("geometry") or zone_polygon_geojson if isinstance(zone_polygon_geojson, dict) else zone_polygon_geojson
+            if isinstance(geom, dict) and geom.get("type") == "Feature":
+                geom = geom.get("geometry") or {}
+            zone_shape = shape(geom)
+        except Exception:
+            pass
+
+    exit_shelters = [s for s in shelters if s.get("id", "").startswith("exit-") or s.get("name", "").startswith("Zone Exit")]
+    real_shelters = [s for s in shelters if not s.get("id", "").startswith("exit-") and not s.get("name", "").startswith("Zone Exit")]
+
+    if zone_shape is None:
+        # No zone info — just pick nearest real shelter
+        best = min(real_shelters or shelters, key=lambda s: travel_min(s), default=None)
+        return best
+
+    citizen_pt = Point(citizen_lon, citizen_lat)
+    in_zone = zone_shape.contains(citizen_pt)
+
+    if not in_zone:
+        external = [s for s in real_shelters if not zone_shape.contains(Point(s["lon"], s["lat"]))]
+        best = min(external or real_shelters or shelters, key=lambda s: travel_min(s), default=None)
+        return best
+
+    # Citizen inside zone — use the scenario's time_available as remaining budget.
+    # We don't have elapsed_minutes here, so this is conservative (slightly optimistic),
+    # but better than a hardcoded value.
+    remaining = max(10.0, time_available)
+
+    external = [s for s in real_shelters if not zone_shape.contains(Point(s["lon"], s["lat"]))]
+    internal = [s for s in real_shelters if zone_shape.contains(Point(s["lon"], s["lat"]))]
+
+    tier_a  = [s for s in external   if travel_min(s) <= remaining * 0.85]
+    tier_b  = [s for s in exit_shelters if travel_min(s) <= remaining * 0.90]
+    tier_c  = [s for s in external   if remaining * 0.85 < travel_min(s) <= remaining * 1.05]
+    # Tier B2: nearest exit unconditionally — escaping zone always beats internal shelter
+    tier_b2 = [s for s in exit_shelters if travel_min(s) <= remaining * 3.0]
+    if not tier_b2 and exit_shelters:
+        tier_b2 = [min(exit_shelters, key=lambda s: travel_min(s))]
+    tier_d  = internal  # internal shelters as fallback
+
+    for tier in [tier_a, tier_b, tier_c, tier_b2, tier_d, real_shelters or shelters]:
+        if tier:
+            best = min(tier, key=lambda s: travel_min(s))
+            return best
+    return None
+
+
+def _dist2(lat1, lon1, lat2, lon2):
+    return ((lat2 - lat1) * 111) ** 2 + ((lon2 - lon1) * 85) ** 2
 
 
 @app.get("/route")

@@ -25,12 +25,9 @@ from app.core import pathfinder, safe_zones as sz_selector
 
 logger = logging.getLogger(__name__)
 
-TICK_INTERVAL = int(os.getenv("TICK_INTERVAL_SECONDS", "8"))  # faster for demo
-TICK_SIM_MINUTES = 5.0       # simulated minutes per real-world tick
-WALK_SPEED_MS = 4.5 / 3.6   # 4.5 km/h in m/s
-TICK_ADVANCE_M = WALK_SPEED_MS * TICK_INTERVAL * (TICK_SIM_MINUTES / (TICK_INTERVAL / 60))
-# Simplified: each tick evacuees move 375 m (5 sim-min at walking speed)
-TICK_ADVANCE_M = 375.0
+TICK_INTERVAL = int(os.getenv("TICK_INTERVAL_SECONDS", "1"))  # 1s wall-clock per tick
+TICK_SIM_MINUTES = 40.0      # simulated minutes per real-world tick
+TICK_ADVANCE_M = 3000.0      # evacuees move 3000 m per tick
 
 
 async def run_simulation_loop(engine: Any) -> None:
@@ -167,36 +164,67 @@ def _update_zone_on_arrival(engine: Any, zone_id: Optional[str]) -> None:
 # ------------------------------------------------------------------
 
 async def _check_routes(engine: Any) -> None:
-    if engine.danger_polygon is None or engine.graph is None:
+    if engine.graph is None:
         return
 
-    try:
-        danger_shape = shape(engine.danger_polygon)
-    except Exception:
-        return
+    danger_shape = None
+    if engine.danger_polygon is not None:
+        try:
+            danger_shape = shape(engine.danger_polygon)
+        except Exception:
+            pass
 
+    elapsed   = engine.scenario.elapsed_minutes
+    remaining = max(1.0, engine.scenario.time_available - elapsed)
     citizens_list = list(engine.citizens.values())
 
     for citizen in citizens_list:
         if citizen.status != CitizenStatus.evacuating:
             continue
 
-        if not pathfinder.is_route_compromised(engine.graph, citizen.route_geojson, danger_shape):
+        # ── Trigger 1: route physically intersects the danger polygon ────────
+        route_blocked = (
+            danger_shape is not None
+            and pathfinder.is_route_compromised(engine.graph, citizen.route_geojson, danger_shape)
+        )
+
+        # ── Trigger 2: assigned shelter is now engulfed by hazard ────────────
+        shelter_engulfed = False
+        if danger_shape is not None and citizen.assigned_zone_id:
+            for zone in engine.safe_zones:
+                if zone.id == citizen.assigned_zone_id:
+                    if danger_shape.contains(_shapely_pt(zone.lat, zone.lon)):
+                        shelter_engulfed = True
+                    break
+
+        # ── Trigger 3: remaining travel time exceeds remaining scenario time ─
+        # Citizen was assigned a far shelter but time is running out; switch to
+        # something closer (exit point or internal shelter).
+        time_overrun = (
+            citizen.time_minutes > 0
+            and citizen.time_minutes > remaining * 1.15
+        )
+
+        if not (route_blocked or shelter_engulfed or time_overrun):
             continue
 
+        reason = (
+            "path blocked by hazard" if route_blocked else
+            "assigned shelter engulfed by hazard" if shelter_engulfed else
+            "insufficient time remaining to reach original destination"
+        )
         old_destination = citizen.destination_name
 
-        # Uses engine.scenario.time_available so threshold changes mid-session
-        # are automatically picked up on the next tick's reroute check.
         new_zone = sz_selector.select_zone_with_threshold(
             citizen.lat, citizen.lon,
             engine.safe_zones,
             engine.danger_polygon,
             engine.zone_polygon,
             engine.scenario.time_available,
+            elapsed_minutes=elapsed,
         )
-        if new_zone is None:
-            logger.warning("No safe zone for citizen %s", citizen.citizen_id)
+        if new_zone is None or new_zone.id == citizen.assigned_zone_id:
+            # No better option available — keep current assignment
             continue
 
         new_route = pathfinder.build_route(
@@ -205,12 +233,10 @@ async def _check_routes(engine: Any) -> None:
             citizens_list,
         )
         if new_route is None:
-            logger.warning("No route found for citizen %s", citizen.citizen_id)
             continue
 
         dist, time_min = pathfinder.route_distance_and_time(new_route)
 
-        # Update zone occupancies
         _transfer_zone_occupancy(engine, citizen.assigned_zone_id, new_zone.id)
 
         citizen.route_geojson    = new_route
@@ -224,15 +250,15 @@ async def _check_routes(engine: Any) -> None:
 
         engine.add_notification(NotificationCard(
             citizen_id=citizen.citizen_id,
-            message="Route updated — original path blocked by hazard zone.",
+            message=f"Route updated — {reason}.",
             old_destination=old_destination,
             new_destination=new_zone.name,
         ))
 
         logger.info(
-            "Rerouted %s → %s (v%d, %.1f km, %.0f min)",
+            "Rerouted %s → %s (v%d, %.1f km, %.0f min) [%s]",
             citizen.citizen_id, new_zone.name,
-            citizen.route_version, dist, time_min,
+            citizen.route_version, dist, time_min, reason,
         )
 
 
@@ -247,6 +273,11 @@ def _transfer_zone_occupancy(engine: Any, old_id: Optional[str], new_id: str) ->
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _shapely_pt(lat: float, lon: float):
+    from shapely.geometry import Point
+    return Point(lon, lat)
+
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     import math
