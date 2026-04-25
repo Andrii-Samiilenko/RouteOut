@@ -112,6 +112,30 @@ function setStatus(state) {
 }
 
 // ── Geometry helpers ───────────────────────────────────────────────────────
+
+function _pointToSegmentDistKm(px, py, ax, ay, bx, by) {
+  const dxSeg = bx - ax, dySeg = by - ay;
+  const lenSq = dxSeg * dxSeg + dySeg * dySeg;
+  let t = lenSq > 0
+    ? Math.max(0, Math.min(1, ((px - ax) * dxSeg + (py - ay) * dySeg) / lenSq))
+    : 0;
+  const cx = ax + t * dxSeg, cy = ay + t * dySeg;
+  return Math.sqrt(((px - cx) * 85) ** 2 + ((py - cy) * 111) ** 2);
+}
+
+function _escapeTimeMinutes(lat, lon, zoneGeoJson) {
+  if (!zoneGeoJson) return 0;
+  const geom = zoneGeoJson.geometry ?? zoneGeoJson;
+  const ring = geom.coordinates?.[0];
+  if (!ring || ring.length < 2) return 0;
+  let minDistKm = Infinity;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const d = _pointToSegmentDistKm(lon, lat, ring[j][0], ring[j][1], ring[i][0], ring[i][1]);
+    if (d < minDistKm) minDistKm = d;
+  }
+  return (minDistKm / 4.5) * 60;
+}
+
 function _nearestShelter(userLat, userLon, shelters) {
   if (!shelters || shelters.length === 0) return null;
   let best = null, bestDist = Infinity;
@@ -173,16 +197,11 @@ function showAlert(payload) {
   iconWrap.style.color = cfg.color;
   iconWrap.innerHTML = DISASTER_SVG[type] || DISASTER_SVG.fire;
 
-  // Shelter badge
-  const shelter = payload.shelter;
+  // Shelter badge — hide until we know user's location
   const shelterBadge = document.getElementById('shelter-badge');
-  const shelterNameEl = document.getElementById('shelter-name');
-  if (shelter) {
-    shelterNameEl.textContent = shelter.name;
-    shelterBadge.classList.add('visible');
-  } else {
-    shelterBadge.classList.remove('visible');
-  }
+  shelterBadge.classList.remove('visible');
+  const exitTimeEl = document.getElementById('shelter-exit-time');
+  if (exitTimeEl) { exitTimeEl.style.display = 'none'; exitTimeEl.textContent = ''; }
 
   // Switch screens
   idleScreen.classList.add('hidden');
@@ -325,24 +344,35 @@ function fetchAndDrawRoute(payload, accentColor) {
 }
 
 function _onLocationReady(userLat, userLon, shelter, accentColor) {
-  // Check user is within the evacuation zone (if zone was sent with alert)
   const zone = _currentPayload?.zone_polygon;
+  const shelterBadge  = document.getElementById('shelter-badge');
+  const shelterNameEl = document.getElementById('shelter-name');
+  const exitTimeEl    = document.getElementById('shelter-exit-time');
+
+  // Check user is within the evacuation zone
   if (zone && !_pointInPolygon(userLat, userLon, zone)) {
+    shelterBadge.classList.remove('visible');
     setRouteStatus('You are outside the evacuation zone — no action needed', 'ok');
     map.setView([userLat, userLon], 14);
     setTimeout(hideRouteStatus, 6000);
     return;
   }
 
-  // Pick the nearest shelter for this specific user
-  const nearest = _nearestShelter(userLat, userLon, _currentPayload?.shelters);
+  // User is inside zone — compute escape time and show badge
+  const exitMin = zone ? Math.round(_escapeTimeMinutes(userLat, userLon, zone)) : null;
+
+  // Filter out zone exit-point shelters (id starts with "exit-") for real shelter selection
+  const realShelters = (_currentPayload?.shelters || [])
+    .filter(s => !s.name?.startsWith('Zone Exit'));
+  const nearest = _nearestShelter(userLat, userLon, realShelters.length > 0 ? realShelters : _currentPayload?.shelters);
   if (nearest) {
     shelter = nearest;
-    // Update shelter badge with the personalised shelter name
-    const shelterNameEl = document.getElementById('shelter-name');
-    const shelterBadge  = document.getElementById('shelter-badge');
     if (shelterNameEl) shelterNameEl.textContent = shelter.name;
-    if (shelterBadge)  shelterBadge.classList.add('visible');
+    if (exitTimeEl && exitMin !== null && exitMin > 0) {
+      exitTimeEl.textContent = `Est. zone exit: ~${exitMin} min walk`;
+      exitTimeEl.style.display = 'block';
+    }
+    if (shelterBadge) shelterBadge.classList.add('visible');
     // Move shelter marker to nearest shelter
     if (shelterMarker) map.removeLayer(shelterMarker);
     const shelterIcon = L.divIcon({

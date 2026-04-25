@@ -103,8 +103,9 @@ class SimulationEngine:
             wind_speed_kmh=wind_speed_kmh,
         )
         self.zone_polygon = zone_polygon
-        self.shelters = shelters
-        self.safe_zones = self._shelters_to_safe_zones(shelters)
+        corner_exits = self._compute_corner_exits(zone_polygon)
+        self.shelters = shelters + corner_exits
+        self.safe_zones = self._shelters_to_safe_zones(self.shelters)
         self.citizens = {}
         self._routes_recalculated = 0
         self._notifications = []
@@ -180,11 +181,13 @@ class SimulationEngine:
             self.predicted_polygon = self.flood_model.get_predicted_geojson()
 
         elif disaster_type == DisasterType.tsunami:
-            from app.core.tsunami_model import TsunamiModel
-            self.tsunami_model = TsunamiModel()
-            self.tsunami_model.advance()
-            self.danger_polygon = self.tsunami_model.get_inundation_geojson()
-            self.predicted_polygon = self.tsunami_model.get_predicted_geojson()
+            # Use the coastal flood model — it already spreads from the Barcelona waterfront,
+            # which is the correct visual for a Mediterranean tsunami inundation.
+            from app.core.flood_model import FloodModel
+            self.flood_model = FloodModel()
+            self.flood_model.advance()
+            self.danger_polygon = self.flood_model.get_flood_geojson()
+            self.predicted_polygon = self.flood_model.get_predicted_geojson()
 
     # ------------------------------------------------------------------
     # Virtual evacuee spawning
@@ -220,8 +223,9 @@ class SimulationEngine:
             if self.danger_polygon and _point_in_geojson(lat, lon, self.danger_polygon):
                 continue
 
-            target = sz_selector.select_best_zone(
-                lat, lon, self.safe_zones, self.danger_polygon
+            target = sz_selector.select_zone_with_threshold(
+                lat, lon, self.safe_zones, self.danger_polygon,
+                self.zone_polygon, self.scenario.time_available,
             )
             if target is None:
                 continue
@@ -278,10 +282,10 @@ class SimulationEngine:
             self.flood_model.advance()
             self.danger_polygon    = self.flood_model.get_flood_geojson()
             self.predicted_polygon = self.flood_model.get_predicted_geojson()
-        elif dt == DisasterType.tsunami and self.tsunami_model:
-            self.tsunami_model.advance()
-            self.danger_polygon    = self.tsunami_model.get_inundation_geojson()
-            self.predicted_polygon = self.tsunami_model.get_predicted_geojson()
+        elif dt == DisasterType.tsunami and self.flood_model:
+            self.flood_model.advance()
+            self.danger_polygon    = self.flood_model.get_flood_geojson()
+            self.predicted_polygon = self.flood_model.get_predicted_geojson()
 
     # ------------------------------------------------------------------
     # Statistics
@@ -396,6 +400,50 @@ class SimulationEngine:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_corner_exits(zone_polygon: Optional[Dict[str, Any]]) -> List[ShelterMarker]:
+        """
+        Generate lightweight exit-point shelters just outside each vertex of the
+        evacuation zone polygon.  Citizens routed here when escape_time > threshold.
+        """
+        if zone_polygon is None:
+            return []
+        geojson = zone_polygon
+        if geojson.get("type") == "Feature":
+            geojson = geojson.get("geometry") or {}
+        ring = geojson.get("coordinates", [[]])[0]
+        if len(ring) < 3:
+            return []
+        # Centroid of ring (for outward direction calculation)
+        lons = [p[0] for p in ring]
+        lats = [p[1] for p in ring]
+        cx = sum(lons) / len(lons)
+        cy = sum(lats) / len(lats)
+
+        exits: List[ShelterMarker] = []
+        seen: set = set()
+        unique_verts = ring[:-1] if (ring[0] == ring[-1]) else ring
+        for i, vertex in enumerate(unique_verts):
+            vlon, vlat = vertex[0], vertex[1]
+            key = (round(vlon, 5), round(vlat, 5))
+            if key in seen:
+                continue
+            seen.add(key)
+            dx, dy = vlon - cx, vlat - cy
+            mag = math.sqrt(dx * dx + dy * dy) or 0.001
+            # Push 0.0025° (~250 m) outward from centroid
+            exit_lon = vlon + (dx / mag) * 0.0025
+            exit_lat = vlat + (dy / mag) * 0.0025
+            exits.append(ShelterMarker(
+                id=f"exit-{i}",
+                name=f"Zone Exit Point {i + 1}",
+                lat=exit_lat,
+                lon=exit_lon,
+                capacity=99999,
+                shelter_type=ShelterType.exit_point,
+            ))
+        return exits
 
     @staticmethod
     def _shelters_to_safe_zones(shelters: List[ShelterMarker]) -> List[SafeZone]:

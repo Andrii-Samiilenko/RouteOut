@@ -19,9 +19,10 @@ class DisasterType(str, Enum):
 
 
 class ShelterType(str, Enum):
-    shelter  = "shelter"
-    hospital = "hospital"
-    assembly = "assembly"
+    shelter    = "shelter"
+    hospital   = "hospital"
+    assembly   = "assembly"
+    exit_point = "exit_point"  # lightweight zone-boundary exit marker
 
 
 class CitizenStatus(str, Enum):

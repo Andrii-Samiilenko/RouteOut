@@ -55,6 +55,9 @@ export default function Coordinator() {
   const [zonePolygon, setZonePolygon]         = useState(null);
   const [pendingShelters, setPendingShelters] = useState([]);
   const [shelterDialog, setShelterDialog]     = useState(null);
+  // Incremented on reset — signals CoordinatorMap to clear any in-progress
+  // polygon vertices even if the polygon was never completed (zonePolygon stays null).
+  const [drawResetKey, setDrawResetKey]       = useState(0);
 
   // Called when preset shelters are loaded from backend
   function handleSheltersLoaded(shelterList) {
@@ -75,6 +78,7 @@ export default function Coordinator() {
     setDrawMode(null);
     setShelterDialog(null);
     prevVersionsRef.current = {};
+    setDrawResetKey((k) => k + 1); // tells CoordinatorMap to clear in-progress vertices
   }
 
   function handleMapClick({ lat, lon }) {
@@ -107,7 +111,7 @@ export default function Coordinator() {
   const totalCit    = (wsData?.citizens?.features || []).length;
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden font-sans bg-gray-950">
+    <div className="relative w-screen h-screen overflow-hidden bg-[#0a0f1e]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
 
       {/* ── Full-screen map ── */}
       <MapErrorBoundary>
@@ -115,6 +119,7 @@ export default function Coordinator() {
           wsData={wsData}
           flashingSet={flashingCitizens}
           drawMode={drawMode}
+          drawResetKey={drawResetKey}
           pendingShelters={pendingShelters}
           zonePolygon={zonePolygon}
           onMapClick={handleMapClick}
@@ -123,27 +128,27 @@ export default function Coordinator() {
       </MapErrorBoundary>
 
       {/* Connection badge */}
-      <div className="absolute top-4 left-4 z-20 flex items-center gap-1.5 bg-gray-900/80 backdrop-blur-sm rounded-full px-3 py-1.5 border border-gray-700/60 shadow">
-        <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
-        <span className="text-xs text-gray-300">{connected ? 'Live' : 'Reconnecting…'}</span>
+      <div className="absolute top-4 left-4 z-20 flex items-center gap-1.5 bg-[#0d1424]/90 backdrop-blur-sm rounded-full px-3 py-1.5 border border-white/[0.08] shadow">
+        <span className={`w-2 h-2 rounded-full ${connected ? 'bg-[#1abc9c] animate-pulse' : 'bg-[#c0392b]'}`} />
+        <span className="text-[11px] text-[#a0a0a0] font-medium">{connected ? 'Live' : 'Reconnecting…'}</span>
       </div>
 
       {/* Sim time badge — visible when active */}
       {scenario.active && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-gray-900/90 backdrop-blur-sm rounded-full px-4 py-1.5 border border-gray-700/60 shadow">
-          <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
-          <span className="text-xs text-gray-300 font-medium">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-[#0d1424]/95 backdrop-blur-sm rounded-full px-4 py-1.5 border border-white/[0.08] shadow">
+          <span className="w-2 h-2 rounded-full bg-[#c0392b] animate-pulse" />
+          <span className="text-[11px] text-[#f0f0f0] font-semibold tabular-nums">
             T+{Math.round(scenario.elapsed_minutes ?? 0)} min
           </span>
-          <span className="text-gray-600 text-xs">·</span>
-          <span className="text-xs text-gray-400 capitalize">{scenario.disaster_type}</span>
+          <span className="text-[#a0a0a0] text-xs">·</span>
+          <span className="text-[11px] text-[#a0a0a0] capitalize">{scenario.disaster_type}</span>
         </div>
       )}
 
       {/* Draw mode hint */}
       {drawMode && !scenario.active && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 bg-gray-900/90 backdrop-blur-sm rounded-full px-4 py-1.5 border border-emerald-700/60 shadow pointer-events-none">
-          <span className="text-xs text-emerald-300 font-medium">
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 bg-[#0d1424]/95 backdrop-blur-sm rounded-full px-4 py-1.5 border border-[#1abc9c]/30 shadow pointer-events-none">
+          <span className="text-[11px] text-[#1abc9c] font-medium">
             {drawMode === 'polygon'
               ? 'Click to add vertices — double-click to finish the zone'
               : 'Click on the map to place a shelter'}
@@ -153,23 +158,23 @@ export default function Coordinator() {
 
       {/* Error toast */}
       {error && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 bg-red-950/90 border border-red-700 text-red-300 text-sm px-4 py-2.5 rounded-xl shadow-lg max-w-sm text-center">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 bg-[#c0392b]/20 border border-[#c0392b]/50 text-[#f0f0f0] text-sm px-4 py-2.5 rounded-xl shadow-lg max-w-sm text-center backdrop-blur-sm">
           {error}
         </div>
       )}
 
       {/* ── Safe zone legend ── */}
-      <div className="absolute bottom-4 left-4 z-20 bg-gray-900/80 backdrop-blur-sm rounded-xl px-3 py-2 border border-gray-700/60 shadow">
-        <p className="text-gray-500 text-[9px] uppercase tracking-widest mb-1.5">Safe Zone Capacity</p>
+      <div className="absolute bottom-4 left-4 z-20 bg-[#0d1424]/90 backdrop-blur-sm rounded-xl px-3 py-2 border border-white/[0.08] shadow">
+        <p className="text-[#a0a0a0] text-[9px] uppercase tracking-[0.18em] mb-1.5 font-bold">Safe Zone Capacity</p>
         <div className="flex flex-col gap-1">
           {[
-            { color: 'bg-emerald-500', label: 'Available (<50%)' },
-            { color: 'bg-amber-500',   label: 'Filling (50–80%)' },
-            { color: 'bg-red-500',     label: 'Near Full (>80%)' },
+            { color: '#27AE60', label: 'Available (<50%)' },
+            { color: '#F39C12', label: 'Filling (50–80%)' },
+            { color: '#E74C3C', label: 'Near Full (>80%)' },
           ].map(({ color, label }) => (
             <div key={label} className="flex items-center gap-2">
-              <span className={`w-2.5 h-2.5 rounded-full ${color} opacity-80`} />
-              <span className="text-gray-400 text-[10px]">{label}</span>
+              <span style={{ background: color }} className="w-2.5 h-2.5 rounded-full opacity-90 shrink-0" />
+              <span className="text-[#a0a0a0] text-[10px]">{label}</span>
             </div>
           ))}
         </div>
@@ -177,15 +182,15 @@ export default function Coordinator() {
 
       {/* ── Floating right panel ── */}
       <div
-        className="absolute top-4 right-4 bottom-4 z-20 w-[360px] flex flex-col gap-3 overflow-y-auto rounded-2xl bg-gray-900/90 backdrop-blur-md border border-gray-700/50 shadow-2xl p-4"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: '#374151 transparent' }}
+        className="absolute top-4 right-4 bottom-4 z-20 w-[360px] flex flex-col gap-3 overflow-y-auto rounded-2xl bg-[#0d1424]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl p-4"
+        style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-1 border-b border-gray-700/50">
-          <h1 className="text-white font-bold text-lg tracking-tight">
-            Route<span className="text-emerald-400">Out</span>
+        <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+          <h1 className="text-[#f0f0f0] font-extrabold text-lg tracking-tight">
+            Route<span style={{ color: '#1abc9c' }}>Out</span>
           </h1>
-          <span className="text-gray-500 text-xs font-medium uppercase tracking-wider">Supervisor</span>
+          <span className="text-[#a0a0a0] text-[10px] font-bold uppercase tracking-[0.16em]">Supervisor</span>
         </div>
 
         {/* Control panel */}
@@ -217,43 +222,75 @@ export default function Coordinator() {
   );
 }
 
+// SVG shelter type icons (no emoji)
+function ShelterTypeIcon({ type, size = 13 }) {
+  if (type === 'hospital') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+        <path d="M8 5v6M5 8h6"/>
+      </svg>
+    );
+  }
+  if (type === 'assembly') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M1 15h14"/>
+        <path d="M3 15V9l5-5 5 5v6"/>
+        <rect x="6" y="10" width="4" height="5"/>
+      </svg>
+    );
+  }
+  // default: shelter/tent
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 14L8 2l7 12"/>
+      <path d="M1 14h14"/>
+      <path d="M8 14V8"/>
+    </svg>
+  );
+}
+
 function ShelterDialog({ onConfirm, onCancel }) {
   const [name, setName]           = useState('');
   const [capacity, setCapacity]   = useState(200);
   const [shelterType, setShelterType] = useState('shelter');
 
   const types = [
-    { value: 'shelter',  label: '⛺ Shelter' },
-    { value: 'hospital', label: '🏥 Hospital' },
-    { value: 'assembly', label: '🏛️ Assembly' },
+    { value: 'shelter',  label: 'Shelter'  },
+    { value: 'hospital', label: 'Hospital' },
+    { value: 'assembly', label: 'Assembly' },
   ];
 
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-80 shadow-2xl">
-        <h3 className="text-white font-bold text-sm mb-4">Add Shelter Marker</h3>
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-[#0d1424] border border-white/[0.1] rounded-2xl p-6 w-80 shadow-2xl">
+        <h3 className="text-[#f0f0f0] font-bold text-sm mb-4 tracking-wide">Add Shelter Marker</h3>
 
         <div className="flex flex-col gap-3">
           <div>
-            <label className="text-gray-400 text-xs mb-1 block">Name</label>
+            <label className="text-[#a0a0a0] text-[10px] uppercase tracking-[0.12em] mb-1 block">Name</label>
             <input
               autoFocus value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Palau Sant Jordi"
-              className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
+              className="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-[#f0f0f0] placeholder-[#a0a0a0]/50 focus:outline-none focus:border-[#1abc9c]/60"
             />
           </div>
 
           <div>
-            <label className="text-gray-400 text-xs mb-1 block">Type</label>
+            <label className="text-[#a0a0a0] text-[10px] uppercase tracking-[0.12em] mb-1 block">Type</label>
             <div className="flex gap-1.5">
               {types.map(({ value, label }) => (
                 <button
                   key={value}
                   onClick={() => setShelterType(value)}
-                  className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-all
-                    ${shelterType === value ? 'bg-emerald-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
+                  className={`flex-1 flex flex-col items-center gap-1 py-2 rounded-lg text-[10px] font-semibold tracking-wide transition-all
+                    ${shelterType === value
+                      ? 'bg-[#1abc9c]/20 border border-[#1abc9c]/40 text-[#1abc9c]'
+                      : 'bg-white/[0.04] border border-white/[0.08] text-[#a0a0a0] hover:bg-white/[0.08]'}`}
                 >
+                  <ShelterTypeIcon type={value} size={13} />
                   {label}
                 </button>
               ))}
@@ -262,13 +299,14 @@ function ShelterDialog({ onConfirm, onCancel }) {
 
           <div>
             <div className="flex justify-between items-center mb-1">
-              <label className="text-gray-400 text-xs">Capacity</label>
-              <span className="text-white text-xs font-semibold">{capacity}</span>
+              <label className="text-[#a0a0a0] text-[10px] uppercase tracking-[0.12em]">Capacity</label>
+              <span className="text-[#f0f0f0] text-xs font-bold tabular-nums">{capacity}</span>
             </div>
             <input
               type="range" min={50} max={5000} step={50} value={capacity}
               onChange={(e) => setCapacity(Number(e.target.value))}
-              className="w-full accent-emerald-400"
+              onInput={(e) => setCapacity(Number(e.target.value))}
+              className="w-full accent-[#1abc9c]"
             />
           </div>
         </div>
@@ -276,13 +314,13 @@ function ShelterDialog({ onConfirm, onCancel }) {
         <div className="flex gap-2 mt-5">
           <button
             onClick={() => onConfirm({ name: name || 'Shelter', capacity, shelter_type: shelterType })}
-            className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold transition-colors"
+            className="flex-1 py-2 bg-[#1abc9c] hover:bg-[#16a085] text-[#0a0f1e] rounded-lg text-sm font-bold tracking-wide transition-colors"
           >
             Place
           </button>
           <button
             onClick={onCancel}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors"
+            className="px-4 py-2 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[#a0a0a0] rounded-lg text-sm transition-colors"
           >
             Cancel
           </button>

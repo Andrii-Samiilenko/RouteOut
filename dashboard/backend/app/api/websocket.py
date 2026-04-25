@@ -127,7 +127,10 @@ def _handle_citizen_register(engine: Any, data: dict) -> None:
         engine.citizens[cid].lon = lon
         return
 
-    target = sz_selector.select_best_zone(lat, lon, engine.safe_zones, engine.danger_polygon)
+    target = sz_selector.select_zone_with_threshold(
+        lat, lon, engine.safe_zones, engine.danger_polygon,
+        engine.zone_polygon, engine.scenario.time_available,
+    )
     if target is None:
         return
 

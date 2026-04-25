@@ -186,10 +186,14 @@ async def _check_routes(engine: Any) -> None:
 
         old_destination = citizen.destination_name
 
-        new_zone = sz_selector.select_best_zone(
+        # Uses engine.scenario.time_available so threshold changes mid-session
+        # are automatically picked up on the next tick's reroute check.
+        new_zone = sz_selector.select_zone_with_threshold(
             citizen.lat, citizen.lon,
             engine.safe_zones,
             engine.danger_polygon,
+            engine.zone_polygon,
+            engine.scenario.time_available,
         )
         if new_zone is None:
             logger.warning("No safe zone for citizen %s", citizen.citizen_id)
