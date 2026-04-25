@@ -88,7 +88,54 @@ export default function CoordinatorMap({
     });
     mapRef.current = map;
 
+    // 3D rotation interactions (enabled by default but explicit is safer)
+    map.dragRotate.enable();
+    map.touchZoomRotate.enableRotation();
+
+    // Navigation widget — shows tilt/compass UI, makes 3D obvious to judges
+    map.addControl(
+      new mapboxgl.NavigationControl({ visualizePitch: true }),
+      'top-right',
+    );
+
     map.on('load', () => {
+      // Animate camera into 3D perspective on first load
+      map.easeTo({
+        pitch: 45,
+        bearing: -17.6,
+        duration: 1500,
+        easing: (t) => t * (2 - t),
+      });
+
+      // Atmospheric fog — distant buildings fade into the dark background
+      map.setFog({
+        range: [0.5, 10],
+        color: '#1a1d26',
+        'horizon-blend': 0.1,
+      });
+
+      // 3D buildings — added FIRST so all data layers render on top
+      map.addLayer({
+        id: '3d-buildings',
+        source: 'composite',
+        'source-layer': 'building',
+        filter: ['==', 'extrude', 'true'],
+        type: 'fill-extrusion',
+        minzoom: 14,
+        paint: {
+          'fill-extrusion-color': [
+            'interpolate', ['linear'],
+            ['get', 'height'],
+            0,   '#1e2128',
+            50,  '#2e3340',
+            100, '#3a3f4d',
+          ],
+          'fill-extrusion-height':  ['get', 'height'],
+          'fill-extrusion-base':    ['get', 'min_height'],
+          'fill-extrusion-opacity': 0.85,
+        },
+      });
+
       // ── Sources ─────────────────────────────────────────────────────────
       map.addSource('draft-zone',   { type: 'geojson', data: EMPTY_FC });
       map.addSource('sim-zone',     { type: 'geojson', data: EMPTY_FC });
