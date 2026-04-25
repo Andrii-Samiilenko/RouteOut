@@ -3,8 +3,8 @@
  *
  * Flow:
  *   1. On load: connect WebSocket, register service worker, request push permission
- *   2. Idle state: "Connected to alert system ✓"
- *   3. On alert message: show full-screen emergency popup with Leaflet map
+ *   2. Idle state: shield icon, "Connected" pill
+ *   3. On alert: flash transition → alert screen with map
  */
 
 // ── Config ─────────────────────────────────────────────────────────────────
@@ -12,10 +12,36 @@ const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL   = `${WS_PROTO}://${location.host}/ws`;
 const API_BASE = `${location.protocol}//${location.host}`;
 
+// SVG icons for each disaster type (inline, monoline)
+const DISASTER_SVG = {
+  fire: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 2C12 2 7 7 7 13C7 16.3 9.2 18 12 18C14.8 18 17 16.3 17 13C17 7 12 2 12 2Z"
+          stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="none"/>
+    <path d="M9 14C9 14 9.5 16 12 16C14.5 16 15 14 15 14"
+          stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+    <path d="M12 18V21" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>`,
+
+  flood: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M3 14C3 14 5.5 11 9 14C12.5 17 15 14 15 14C15 14 17.5 11 21 14"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+    <path d="M3 18C3 18 5.5 15 9 18C12.5 21 15 18 15 18C15 18 17.5 15 21 18"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+    <path d="M12 2V10M9 5L12 2L15 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+
+  tsunami: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M2 16C2 16 5 10 9 12C12 13.5 12 8 16 6C19 4.5 22 8 22 8"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+    <path d="M2 20C2 20 5 17 8 18C11 19 13 17 16 18C18.5 18.8 22 17 22 17"
+          stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+  </svg>`,
+};
+
 const DISASTER_CONFIG = {
-  fire:    { color: '#C0392B', bg: 'linear-gradient(135deg,#7B241C,#C0392B)', icon: '🔥', label: 'FIRE EMERGENCY' },
-  flood:   { color: '#2471A3', bg: 'linear-gradient(135deg,#1A5276,#2471A3)', icon: '🌊', label: 'FLOOD EMERGENCY' },
-  tsunami: { color: '#148F77', bg: 'linear-gradient(135deg,#0E6655,#148F77)', icon: '🌀', label: 'TSUNAMI WARNING' },
+  fire:    { color: '#c0392b', bg: 'rgba(192,57,43,0.12)',  iconBg: 'rgba(192,57,43,0.18)', label: 'FIRE EVACUATION',  typeLabel: 'Fire Emergency' },
+  flood:   { color: '#1a5276', bg: 'rgba(26,82,118,0.12)', iconBg: 'rgba(26,82,118,0.18)', label: 'FLOOD EVACUATION', typeLabel: 'Flood Emergency' },
+  tsunami: { color: '#0e6655', bg: 'rgba(14,102,85,0.12)', iconBg: 'rgba(14,102,85,0.18)', label: 'TSUNAMI WARNING',  typeLabel: 'Tsunami Warning' },
 };
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -24,19 +50,22 @@ let userMarker = null;
 let shelterMarker = null;
 let routeLine = null;
 let reconnectDelay = 500;
-let _currentPayload = null;   // saved for retry when user taps "get route" button
-let _currentAccent = '#C0392B';
+let _currentPayload = null;
+let _currentAccent  = '#c0392b';
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
-const statusDot    = document.getElementById('status-dot');
-const statusText   = document.getElementById('status-text');
-const alertModal   = document.getElementById('alert-modal');
-const dismissBtn   = document.getElementById('dismiss-btn');
-const routeStatus  = document.getElementById('route-status');
-const getRouteBtn  = document.getElementById('get-route-btn');
+const statusDot     = document.getElementById('status-dot');
+const statusText    = document.getElementById('status-text');
+const idleScreen    = document.getElementById('idle-screen');
+const alertScreen   = document.getElementById('alert-screen');
+const dismissBtn    = document.getElementById('dismiss-btn');
+const routeStatus   = document.getElementById('route-status');
+const getRouteBtn   = document.getElementById('get-route-btn');
+const flashOverlay  = document.getElementById('flash-overlay');
 
 dismissBtn.addEventListener('click', () => {
-  alertModal.classList.add('hidden');
+  alertScreen.classList.add('hidden');
+  idleScreen.classList.remove('hidden');
 });
 
 getRouteBtn.addEventListener('click', () => {
@@ -75,7 +104,7 @@ function connect() {
 function setStatus(state) {
   if (state === 'connected') {
     statusDot.className = 'dot dot-green';
-    statusText.textContent = 'Connected to alert system ✓';
+    statusText.textContent = 'Connected to alert system';
   } else {
     statusDot.className = 'dot dot-red';
     statusText.textContent = 'Reconnecting…';
@@ -90,31 +119,47 @@ function showAlert(payload) {
   _currentPayload = payload;
   _currentAccent  = cfg.color;
 
-  // Header
-  document.getElementById('alert-header').style.background = cfg.bg;
-  document.getElementById('alert-icon').textContent  = cfg.icon;
-  document.getElementById('alert-label').textContent = cfg.label;
-  document.getElementById('alert-message').textContent = payload.message || '';
+  // Flash transition
+  flashOverlay.classList.add('active');
+  setTimeout(() => flashOverlay.classList.remove('active'), 180);
 
-  // Shelter info
+  // Populate alert content
+  const now = new Date();
+  const timeStr = now.toTimeString().slice(0, 8);
+
+  document.getElementById('alert-time').textContent   = timeStr;
+  document.getElementById('issued-time').textContent  = timeStr;
+  document.getElementById('alert-title').textContent  = cfg.label;
+  document.getElementById('hero-type-label').textContent = cfg.typeLabel;
+  document.getElementById('alert-subtitle').textContent =
+    payload.message || 'Immediate action required — follow evacuation route';
+
+  // Hero accent color
+  document.getElementById('alert-hero').style.setProperty('--hero-accent', cfg.color);
+
+  // Disaster icon
+  const iconWrap = document.getElementById('hero-icon-wrap');
+  iconWrap.style.background = cfg.iconBg;
+  iconWrap.style.color = cfg.color;
+  iconWrap.innerHTML = DISASTER_SVG[type] || DISASTER_SVG.fire;
+
+  // Shelter badge
   const shelter = payload.shelter;
-  const shelterInfoEl = document.getElementById('shelter-info');
+  const shelterBadge = document.getElementById('shelter-badge');
+  const shelterNameEl = document.getElementById('shelter-name');
   if (shelter) {
-    shelterInfoEl.textContent = `Assigned shelter: ${shelter.name}`;
-    shelterInfoEl.style.display = 'block';
+    shelterNameEl.textContent = shelter.name;
+    shelterBadge.classList.add('visible');
   } else {
-    shelterInfoEl.style.display = 'none';
+    shelterBadge.classList.remove('visible');
   }
 
-  // Show modal first (map needs visible container to init correctly)
-  alertModal.classList.remove('hidden');
+  // Switch screens
+  idleScreen.classList.add('hidden');
+  alertScreen.classList.remove('hidden');
 
-  // Build / update Leaflet map
+  // Build / update map
   initOrUpdateMap(payload, cfg.color);
-
-  // Pulse animation on the header
-  document.getElementById('alert-header').classList.add('pulse-once');
-  setTimeout(() => document.getElementById('alert-header').classList.remove('pulse-once'), 1200);
 
   // Vibrate (mobile)
   if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 500]);
@@ -129,13 +174,26 @@ function hideRouteStatus() {
   routeStatus.className = '';
 }
 
+// ── Map ────────────────────────────────────────────────────────────────────
 function initOrUpdateMap(payload, accentColor) {
   const mapEl = document.getElementById('alert-map');
 
   if (!map) {
-    map = L.map(mapEl, { zoomControl: true, attributionControl: false });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    map = L.map(mapEl, {
+      zoomControl: false,
+      attributionControl: false,
+      scrollWheelZoom: false,
+      dragging: false,
+      touchZoom: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
+    });
+
+    // CartoDB Positron — light, minimal, no token needed
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       maxZoom: 19,
+      subdomains: 'abcd',
     }).addTo(map);
   } else {
     [userMarker, shelterMarker, routeLine].forEach((l) => l && map.removeLayer(l));
@@ -144,17 +202,22 @@ function initOrUpdateMap(payload, accentColor) {
 
   const shelter = payload.shelter;
 
-  // Always place shelter marker immediately
   if (shelter) {
+    // SVG pin marker for shelter
     const shelterIcon = L.divIcon({
       className: '',
-      html: `<div class="shelter-pin">⛺<div class="shelter-label">${shelter.name}</div></div>`,
-      iconSize: [44, 44],
-      iconAnchor: [22, 44],
+      html: `<div class="shelter-pin-wrap">
+        <svg width="22" height="28" viewBox="0 0 22 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M11 1C6.6 1 3 4.6 3 9C3 14.5 11 27 11 27C11 27 19 14.5 19 9C19 4.6 15.4 1 11 1Z"
+                fill="${accentColor}" stroke="white" stroke-width="1.5"/>
+          <circle cx="11" cy="9" r="3" fill="white" opacity="0.9"/>
+        </svg>
+        <div class="shelter-pin-label">${shelter.name}</div>
+      </div>`,
+      iconSize: [80, 46],
+      iconAnchor: [11, 28],
     });
-    shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon })
-      .addTo(map)
-      .bindPopup(`<b>${shelter.name}</b><br>Assigned evacuation shelter`);
+    shelterMarker = L.marker([shelter.lat, shelter.lon], { icon: shelterIcon }).addTo(map);
     map.setView([shelter.lat, shelter.lon], 14);
   }
 
@@ -162,7 +225,7 @@ function initOrUpdateMap(payload, accentColor) {
   fetchAndDrawRoute(payload, accentColor);
 }
 
-// IP-based location fallback (used when browser blocks GPS on HTTP/LAN)
+// ── Geolocation + route ────────────────────────────────────────────────────
 async function _getIPLocation() {
   try {
     const r = await fetch('https://ip-api.com/json/', { cache: 'no-store' });
@@ -177,7 +240,6 @@ function fetchAndDrawRoute(payload, accentColor) {
   const shelter = payload.shelter;
 
   if (!navigator.geolocation) {
-    // No GPS API — try IP location immediately
     setRouteStatus('GPS unavailable — trying network location…', 'warn');
     _getIPLocation().then((loc) => {
       if (loc) {
@@ -194,15 +256,14 @@ function fetchAndDrawRoute(payload, accentColor) {
     (pos) => {
       const { latitude: userLat, longitude: userLon } = pos.coords;
 
-      // Sanity check: if GPS returns a position more than 100 km from Barcelona,
-      // it's a stale cached fix from another city — ignore it and ask again.
+      // Sanity check: more than 100 km from Barcelona means stale cached fix
       const BCN_LAT = 41.385, BCN_LON = 2.173;
       const distKm = Math.sqrt(
         ((userLat - BCN_LAT) * 111) ** 2 +
         ((userLon - BCN_LON) * 85) ** 2
       );
       if (distKm > 100) {
-        setRouteStatus('GPS fix seems far away — retrying…', 'warn');
+        setRouteStatus('GPS fix seems far — retrying…', 'warn');
         navigator.geolocation.getCurrentPosition(
           (pos2) => _onLocationReady(pos2.coords.latitude, pos2.coords.longitude, shelter, accentColor),
           async () => {
@@ -218,14 +279,10 @@ function fetchAndDrawRoute(payload, accentColor) {
 
       _onLocationReady(userLat, userLon, shelter, accentColor);
     },
-    async (err) => {
-      // GPS denied or blocked (common on HTTP/LAN) — fall back to IP location
+    async () => {
       setRouteStatus('GPS blocked — trying network location…', 'warn');
       const loc = await _getIPLocation();
-      if (loc) {
-        _onLocationReady(loc.lat, loc.lon, shelter, accentColor);
-        return;
-      }
+      if (loc) { _onLocationReady(loc.lat, loc.lon, shelter, accentColor); return; }
       if (shelter) {
         setRouteStatus('Allow location to see your route', 'warn');
       } else {
@@ -233,19 +290,17 @@ function fetchAndDrawRoute(payload, accentColor) {
       }
       getRouteBtn.classList.add('visible');
     },
-    // enableHighAccuracy: false — avoids iOS Safari silently blocking GPS on HTTP
     { timeout: 12000, maximumAge: 0, enableHighAccuracy: false },
   );
 }
 
 function _onLocationReady(userLat, userLon, shelter, accentColor) {
-  // Place / update user marker
   if (userMarker) map.removeLayer(userMarker);
   const userIcon = L.divIcon({
     className: '',
     html: `<div class="user-dot"><div class="user-dot-ring"></div></div>`,
-    iconSize: [20, 20],
-    iconAnchor: [10, 10],
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
   });
   userMarker = L.marker([userLat, userLon], { icon: userIcon }).addTo(map);
 
@@ -255,14 +310,12 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
     return;
   }
 
-  // Distance user→shelter in km
   const dKm = Math.sqrt(
     ((userLat - shelter.lat) * 111) ** 2 +
     ((userLon - shelter.lon) * 85) ** 2
   );
   if (dKm > 50) {
-    // Position too far from shelter — GPS still stale, just show shelter
-    setRouteStatus('Could not confirm your location — showing shelter only', 'warn');
+    setRouteStatus('Could not confirm location — showing shelter only', 'warn');
     setTimeout(hideRouteStatus, 5000);
     map.setView([shelter.lat, shelter.lon], 14);
     return;
@@ -278,9 +331,15 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
       const path = data.path;
       if (path && path.length >= 2) {
         const latlngs = path.map((p) => [p.lat, p.lng]);
-        routeLine = L.polyline(latlngs, { color: accentColor, weight: 5, opacity: 0.9 }).addTo(map);
+        routeLine = L.polyline(latlngs, {
+          color: '#27ae60',
+          weight: 4,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }).addTo(map);
         const allBounds = [[userLat, userLon], [shelter.lat, shelter.lon], ...latlngs];
-        setTimeout(() => map.fitBounds(allBounds, { padding: [50, 50], maxZoom: 16 }), 200);
+        setTimeout(() => map.fitBounds(allBounds, { padding: [36, 36], maxZoom: 16 }), 200);
         setRouteStatus(`Route ready — ${data.waypoints} waypoints`, 'ok');
         setTimeout(hideRouteStatus, 4000);
       } else {
@@ -298,9 +357,9 @@ function _drawStraightLine(userLat, userLon, shelter, accentColor) {
   if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
   routeLine = L.polyline(
     [[userLat, userLon], [shelter.lat, shelter.lon]],
-    { color: accentColor, weight: 4, opacity: 0.7, dashArray: '8 6' }
+    { color: '#27ae60', weight: 4, opacity: 0.7, dashArray: '8 6', lineCap: 'round' }
   ).addTo(map);
-  setTimeout(() => map.fitBounds([[userLat, userLon], [shelter.lat, shelter.lon]], { padding: [50, 50] }), 200);
+  setTimeout(() => map.fitBounds([[userLat, userLon], [shelter.lat, shelter.lon]], { padding: [36, 36] }), 200);
   setRouteStatus('Showing direct path (road route unavailable)', 'warn');
   setTimeout(hideRouteStatus, 5000);
 }
@@ -320,18 +379,15 @@ async function requestPushPermission(reg) {
   if (!('PushManager' in window)) return;
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') return;
-
   try {
     const res = await fetch(`${API_BASE}/vapid-public-key`);
     if (!res.ok) return;
     const { publicKey } = await res.json();
     if (!publicKey) return;
-
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: _urlBase64ToUint8Array(publicKey),
     });
-
     await fetch(`${API_BASE}/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
