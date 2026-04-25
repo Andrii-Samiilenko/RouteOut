@@ -229,8 +229,7 @@ TSUNAMI_SHELTERS: List[Dict[str, Any]] = [
 SHELTERS_BY_SCENARIO: Dict[str, List[Dict[str, Any]]] = {
     "fire":    FIRE_SHELTERS,
     "flood":   FLOOD_SHELTERS,
-    # Tsunami uses the same elevated coastal shelters as flood — get to high ground fast
-    "tsunami": FLOOD_SHELTERS,
+    "tsunami": TSUNAMI_SHELTERS,
 }
 
 

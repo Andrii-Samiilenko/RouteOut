@@ -32,6 +32,7 @@ def build_route(
     danger_geojson: Optional[Dict[str, Any]],
     predicted_geojson: Optional[Dict[str, Any]],
     all_citizens: List[CitizenState],
+    precomputed_congestion: Optional[Dict] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Compute A* route from citizen position to target_zone.
@@ -43,7 +44,10 @@ def build_route(
 
     danger_shape = _to_shape(danger_geojson)
     predicted_shape = _to_shape(predicted_geojson)
-    congested_edges = _build_congestion_map(graph, all_citizens)
+    if precomputed_congestion is not None:
+        congested_edges = precomputed_congestion
+    else:
+        congested_edges = _build_congestion_map(graph, all_citizens)
 
     origin_node = nearest_node(graph, citizen.lat, citizen.lon)
     target_node = nearest_node(graph, target_zone.lat, target_zone.lon)
@@ -230,3 +234,16 @@ def _to_shape(geojson: Optional[Dict[str, Any]]) -> Optional[Any]:
         return shape(geojson)
     except Exception:
         return None
+
+
+def update_congestion_map(counts: Dict, route_geojson: Dict[str, Any]) -> None:
+    """Incrementally add one route's edges to an existing congestion map in-place."""
+    coords = route_geojson.get("geometry", {}).get("coordinates", [])
+    for i in range(len(coords) - 1):
+        key = (
+            round(coords[i][0], 4),
+            round(coords[i][1], 4),
+            round(coords[i + 1][0], 4),
+            round(coords[i + 1][1], 4),
+        )
+        counts[key] = counts.get(key, 0) + 1

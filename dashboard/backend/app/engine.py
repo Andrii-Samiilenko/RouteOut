@@ -181,13 +181,11 @@ class SimulationEngine:
             self.predicted_polygon = self.flood_model.get_predicted_geojson()
 
         elif disaster_type == DisasterType.tsunami:
-            # Use the coastal flood model — it already spreads from the Barcelona waterfront,
-            # which is the correct visual for a Mediterranean tsunami inundation.
-            from app.core.flood_model import FloodModel
-            self.flood_model = FloodModel()
-            self.flood_model.advance()
-            self.danger_polygon = self.flood_model.get_flood_geojson()
-            self.predicted_polygon = self.flood_model.get_predicted_geojson()
+            from app.core.tsunami_model import TsunamiModel
+            self.tsunami_model = TsunamiModel()
+            self.tsunami_model.advance()
+            self.danger_polygon = self.tsunami_model.get_inundation_geojson()
+            self.predicted_polygon = self.tsunami_model.get_predicted_geojson()
 
     # ------------------------------------------------------------------
     # Virtual evacuee spawning
@@ -212,6 +210,9 @@ class SimulationEngine:
             "lon_min": 2.10,  "lon_max": 2.20,
         }
 
+        # Incremental congestion map — O(N) total instead of O(N²)
+        congestion: dict = {}
+
         spawned = 0
         attempts = 0
         while spawned < count and attempts < count * 4:
@@ -234,10 +235,14 @@ class SimulationEngine:
             mock = CitizenState(citizen_id=cid, lat=lat, lon=lon)
             route = pathfinder.build_route(
                 self.graph, mock, target, self.danger_polygon,
-                self.predicted_polygon, list(self.citizens.values()),
+                self.predicted_polygon, [],
+                precomputed_congestion=congestion,
             )
             if route is None:
                 continue
+
+            # Add this route's edges to the incremental congestion map
+            pathfinder.update_congestion_map(congestion, route)
 
             dist, time_min = pathfinder.route_distance_and_time(route)
 
@@ -282,10 +287,10 @@ class SimulationEngine:
             self.flood_model.advance()
             self.danger_polygon    = self.flood_model.get_flood_geojson()
             self.predicted_polygon = self.flood_model.get_predicted_geojson()
-        elif dt == DisasterType.tsunami and self.flood_model:
-            self.flood_model.advance()
-            self.danger_polygon    = self.flood_model.get_flood_geojson()
-            self.predicted_polygon = self.flood_model.get_predicted_geojson()
+        elif dt == DisasterType.tsunami and self.tsunami_model:
+            self.tsunami_model.advance()
+            self.danger_polygon    = self.tsunami_model.get_inundation_geojson()
+            self.predicted_polygon = self.tsunami_model.get_predicted_geojson()
 
     # ------------------------------------------------------------------
     # Statistics

@@ -147,10 +147,7 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
         danger_origin=_DANGER_ORIGINS.get(req.disaster_type.value),
         zone_polygon=req.zone_polygon,
     )
-    notif_ok = await _forward_alert(alert)
-    engine.notification_service_online = notif_ok
-
-    # Broadcast initial state before the loop ticks
+    # Broadcast initial state to connected WS clients
     from app.api.websocket import broadcast_state
     await broadcast_state(engine)
 
@@ -159,13 +156,20 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
     task = asyncio.create_task(run_simulation_loop(engine))
     engine._sim_task = task
 
+    # Forward alert in the background — don't block the HTTP response
+    async def _alert_bg() -> None:
+        ok = await _forward_alert(alert)
+        engine.notification_service_online = ok
+
+    asyncio.create_task(_alert_bg())
+
     return {
         "status": "launched",
         "disaster_type": req.disaster_type,
         "shelters": len(shelters_raw),
         "virtual_evacuees": len(engine.citizens),
         "time_available": req.time_available,
-        "notification_forwarded": notif_ok,
+        "notification_forwarded": "pending",
     }
 
 
@@ -213,11 +217,11 @@ async def get_preset_shelters(disaster_type: str):
 
 async def _forward_alert(payload: AlertForwardPayload) -> bool:
     for url in [
-        "https://localhost:9000/trigger-alert",
         "http://localhost:9000/trigger-alert",
+        "https://localhost:9000/trigger-alert",
     ]:
         try:
-            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=1.5, verify=False) as client:
                 resp = await client.post(url, json=payload.model_dump())
                 resp.raise_for_status()
                 logger.info("Alert forwarded via %s: %s", url, resp.status_code)

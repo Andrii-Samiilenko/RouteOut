@@ -22,6 +22,19 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Pre-load the 99 MB Barcelona graph in a background thread so the first
+    # simulation launch doesn't block waiting for networkx XML parsing.
+    async def _preload_graph() -> None:
+        from app.api.routes import _get_graph
+        import asyncio
+        try:
+            await asyncio.to_thread(_get_graph)
+            logger.info("Barcelona graph pre-loaded")
+        except Exception as exc:
+            logger.warning("Graph pre-load failed: %s", exc)
+
+    import asyncio
+    asyncio.create_task(_preload_graph())
     logger.info("RouteOut dashboard backend ready")
     yield
 

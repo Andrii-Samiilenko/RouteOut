@@ -179,72 +179,56 @@ class FloodModel:
 
     def _build_dem(self) -> np.ndarray:
         """
-        Synthetic DEM calibrated to real Barcelona topography:
-          - Coastal strip (Barceloneta, Poblenou): 1–3 m
-          - Eixample grid: 5–15 m (gentle rise inland)
-          - Gràcia / Sant Gervasi: 20–50 m
-          - Montjuïc hill: peak ~173 m
-          - Collserola ridge: 200–512 m
-          - Sea (east of coast): 50 m virtual (never floods)
+        Vectorised NumPy DEM — same model as before but ~100x faster.
+        Synthetic DEM calibrated to real Barcelona topography.
         """
-        grid = np.zeros((self.grid_h, self.grid_w), dtype=np.float32)
+        rows = np.arange(self.grid_h, dtype=np.float64)
+        cols = np.arange(self.grid_w, dtype=np.float64)
+        C, R = np.meshgrid(cols, rows)
 
-        for r in range(self.grid_h):
-            for c in range(self.grid_w):
-                lat = self.LAT_MIN + r * self._LAT_PER_CELL
-                lon = self.LON_MIN + c * self._LON_PER_CELL
-                grid[r, c] = float(self._elevation_at(lat, lon))
+        lat = self.LAT_MIN + R * self._LAT_PER_CELL
+        lon = self.LON_MIN + C * self._LON_PER_CELL
 
-        return grid
-
-    def _elevation_at(self, lat: float, lon: float) -> float:
-        # ── Sea mask ────────────────────────────────────────────────────
-        # Barcelona coastline runs NNE-SSW; add 400 m buffer so beach
-        # cells are never classified as sea
-        # coast_lon(lat) ≈ 2.200 + (lat - 41.38) * 0.22
         coast_lon = 2.200 + (lat - 41.380) * 0.22
-        sea_lon = coast_lon + 0.005  # ~400 m east of coast = open sea
-        if lon > sea_lon:
-            return 50.0  # open sea — never floods
+        sea_lon = coast_lon + 0.005
 
-        # ── Distance from coast (metres) ─────────────────────────────
-        inland_m = max(0.0, (coast_lon - lon) * 85_000)
-
-        # ── Base coastal plain elevation ─────────────────────────────
-        # 1 m at coast → rises to ~15 m at 2 km inland (Eixample)
+        inland_m = np.maximum(0.0, (coast_lon - lon) * 85_000)
         base_elev = 1.0 + inland_m * 0.007
 
-        # ── Montjuïc hill ────────────────────────────────────────────
-        # Peak at (41.3641, 2.1658), real height ~173 m
-        dm = math.sqrt(
-            ((lat - 41.3641) * 111_000) ** 2 +
-            ((lon - 2.1658) * 85_000) ** 2
-        )
+        dm = np.sqrt(((lat - 41.3641) * 111_000) ** 2 + ((lon - 2.1658) * 85_000) ** 2)
+        montjuic = 160.0 * np.exp(-(dm / 600.0) ** 2)
+
+        ridge_dist = np.sqrt(((lat - 41.430) * 111_000) ** 2 + ((lon - 2.118) * 85_000) ** 2)
+        collserola = 420.0 * np.exp(-(ridge_dist / 2_500.0) ** 2)
+
+        dt = np.sqrt(((lat - 41.4219) * 111_000) ** 2 + ((lon - 2.1186) * 85_000) ** 2)
+        tibidabo = 500.0 * np.exp(-(dt / 800.0) ** 2)
+
+        bessos_dist = np.abs(
+            (lat - 41.415) * math.cos(math.radians(30)) -
+            (lon - 2.198) * math.sin(math.radians(30))
+        ) * 100_000
+        channel_factor = np.maximum(0.0, 1.0 - bessos_dist / 300.0) * 2.0
+
+        total = base_elev + montjuic + collserola + tibidabo - channel_factor
+        total = np.where(lon > sea_lon, 50.0, total)
+        return np.clip(total, 1.0, 512.0).astype(np.float32)
+
+    def _elevation_at(self, lat: float, lon: float) -> float:
+        coast_lon = 2.200 + (lat - 41.380) * 0.22
+        sea_lon = coast_lon + 0.005
+        if lon > sea_lon:
+            return 50.0
+        inland_m = max(0.0, (coast_lon - lon) * 85_000)
+        base_elev = 1.0 + inland_m * 0.007
+        dm = math.sqrt(((lat - 41.3641) * 111_000) ** 2 + ((lon - 2.1658) * 85_000) ** 2)
         montjuic = 160.0 * math.exp(-(dm / 600.0) ** 2)
-
-        # ── Collserola ridge ─────────────────────────────────────────
-        # Ridge axis: lat ~41.43, lon ~2.12, orientation NE–SW
-        # Distance to ridge axis (approximate)
-        ridge_dist = math.sqrt(
-            ((lat - 41.430) * 111_000) ** 2 +
-            ((lon - 2.118) * 85_000) ** 2
-        )
+        ridge_dist = math.sqrt(((lat - 41.430) * 111_000) ** 2 + ((lon - 2.118) * 85_000) ** 2)
         collserola = 420.0 * math.exp(-(ridge_dist / 2_500.0) ** 2)
-
-        # ── Tibidabo peak ────────────────────────────────────────────
-        dt = math.sqrt(
-            ((lat - 41.4219) * 111_000) ** 2 +
-            ((lon - 2.1186) * 85_000) ** 2
-        )
+        dt = math.sqrt(((lat - 41.4219) * 111_000) ** 2 + ((lon - 2.1186) * 85_000) ** 2)
         tibidabo = 500.0 * math.exp(-(dt / 800.0) ** 2)
-
-        # ── Low-lying channel corridors ───────────────────────────────
-        # Riera de Collserola / Besòs drainage channels cut through Eixample
-        # Approximate: diagonal strip lowering elevation by up to 2 m
-        bessos_dist = abs((lat - 41.415) * math.cos(math.radians(30)) -
-                          (lon - 2.198) * math.sin(math.radians(30))) * 100_000
-        channel_factor = max(0.0, 1.0 - bessos_dist / 300.0) * 2.0  # lower by up to 2 m
-
+        bessos_dist = abs((lat - 41.415) * math.cos(math.radians(30)) - (lon - 2.198) * math.sin(math.radians(30))) * 100_000
+        channel_factor = max(0.0, 1.0 - bessos_dist / 300.0) * 2.0
         total = base_elev + montjuic + collserola + tibidabo - channel_factor
         return float(max(1.0, min(512.0, total)))
 
