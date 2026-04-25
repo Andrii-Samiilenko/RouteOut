@@ -422,12 +422,30 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
   const danger = _currentPayload?.danger_origin;
   const dangerParams = danger ? `&danger_lat=${danger.lat}&danger_lon=${danger.lon}` : '';
   const url = `${API_BASE}/route?from_lat=${userLat}&from_lon=${userLon}&to_lat=${shelter.lat}&to_lon=${shelter.lon}${dangerParams}`;
+
+  _fetchRouteWithRetry(url, userLat, userLon, shelter, accentColor, 0);
+}
+
+function _fetchRouteWithRetry(url, userLat, userLon, shelter, accentColor, attempt) {
+  const MAX_ATTEMPTS = 8;
   fetch(url)
-    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((r) => {
+      if (r.status === 503 && attempt < MAX_ATTEMPTS) {
+        // Graph still loading on server — retry after a delay
+        const delay = Math.min(2000 + attempt * 1000, 6000);
+        setRouteStatus(`Loading road network… (${attempt + 1}/${MAX_ATTEMPTS})`, 'warn');
+        setTimeout(() => _fetchRouteWithRetry(url, userLat, userLon, shelter, accentColor, attempt + 1), delay);
+        return null;
+      }
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    })
     .then((data) => {
+      if (!data) return; // waiting for retry
       if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
       const path = data.path;
-      if (path && path.length >= 2) {
+      // A real A* route will have many waypoints; ≤2 means the server fell back to a straight line
+      if (path && path.length > 2) {
         const latlngs = path.map((p) => [p.lat, p.lng]);
         routeLine = L.polyline(latlngs, {
           color: '#27ae60',
@@ -438,7 +456,7 @@ function _onLocationReady(userLat, userLon, shelter, accentColor) {
         }).addTo(map);
         const allBounds = [[userLat, userLon], [shelter.lat, shelter.lon], ...latlngs];
         setTimeout(() => map.fitBounds(allBounds, { padding: [36, 36], maxZoom: 16 }), 200);
-        setRouteStatus(`Route ready — ${data.waypoints} waypoints`, 'ok');
+        setRouteStatus('Route ready', 'ok');
         setTimeout(hideRouteStatus, 4000);
       } else {
         _drawStraightLine(userLat, userLon, shelter, accentColor);

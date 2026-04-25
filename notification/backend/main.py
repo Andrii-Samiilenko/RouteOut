@@ -60,9 +60,10 @@ _graph = None
 _graph_node_array: Optional[tuple] = None  # (np.ndarray of [lat,lon], list of node ids)
 
 _GRAPH_CANDIDATES = [
+    Path(__file__).parent.parent.parent / "dashboard" / "backend" / "data" / "barcelona_graph.graphml",
     Path(__file__).parent.parent.parent / "dashboard" / "data" / "barcelona_graph.graphml",
+    Path(__file__).parent.parent.parent.parent / "dashboard" / "backend" / "data" / "barcelona_graph.graphml",
     Path(__file__).parent.parent.parent.parent / "dashboard" / "data" / "barcelona_graph.graphml",
-    Path("/Users/andrii_samiilenko/Desktop/HackUPC/RouteOut/dashboard/data/barcelona_graph.graphml"),
 ]
 
 
@@ -103,16 +104,17 @@ def _compute_route(
     to_lat: float, to_lon: float,
     danger_lat: Optional[float] = None,
     danger_lon: Optional[float] = None,
-) -> List[Dict[str, float]]:
-    """Return waypoints for a safe walking route, penalising edges near the danger origin."""
+) -> List[Dict[str, float]] | None:
+    """Return waypoints for a safe walking route, penalising edges near the danger origin.
+    Returns None when the graph is still loading (caller should retry)."""
     g = _load_graph()
     if g is None:
-        return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
+        return None  # graph still loading — tell the client to retry
 
     import networkx as nx
     src = _nearest_node(from_lat, from_lon)
     dst = _nearest_node(to_lat, to_lon)
-    if src is None or dst is None or src == dst:
+    if src is None or dst is None:
         return [{"lat": from_lat, "lng": from_lon}, {"lat": to_lat, "lng": to_lon}]
 
     def _edge_weight(u, v, data):
@@ -290,9 +292,13 @@ async def get_route(
     danger_lon: Optional[float] = Query(None),
 ):
     """Return a safe walking route from user GPS to shelter, avoiding the danger origin."""
+    from fastapi.responses import JSONResponse
     path = await asyncio.to_thread(
         _compute_route, from_lat, from_lon, to_lat, to_lon, danger_lat, danger_lon
     )
+    if path is None:
+        # Graph still loading — client should retry in a few seconds
+        return JSONResponse({"error": "graph_loading", "retry_after": 3}, status_code=503)
     return {"path": path, "waypoints": len(path)}
 
 
