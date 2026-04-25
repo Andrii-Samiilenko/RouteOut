@@ -120,9 +120,10 @@ const SHELTER_TYPE_OPTIONS = [
 ];
 
 const SHELTER_ICONS_MAP = {
-  shelter:  <IconShelter  size={16} />,
-  hospital: <IconHospital size={16} />,
-  assembly: <IconAssembly size={16} />,
+  shelter:    <IconShelter  size={16} />,
+  hospital:   <IconHospital size={16} />,
+  assembly:   <IconAssembly size={16} />,
+  exit_point: <IconPolygon  size={16} />,
 };
 
 /**

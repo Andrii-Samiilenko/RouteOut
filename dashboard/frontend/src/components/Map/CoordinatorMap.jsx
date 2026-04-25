@@ -11,9 +11,11 @@ const EMPTY_FC = { type: 'FeatureCollection', features: [] };
 
 // SVG strings for Mapbox DOM markers (no emoji)
 const SHELTER_SVG = {
-  shelter:  `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 21L12 3l11 18"/><line x1="1" y1="21" x2="23" y2="21"/><path d="M12 21v-8"/></svg>`,
-  hospital: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>`,
-  assembly: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h20"/><path d="M4 20V10l8-7 8 7v10"/><rect x="9" y="14" width="6" height="6"/></svg>`,
+  shelter:    `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 21L12 3l11 18"/><line x1="1" y1="21" x2="23" y2="21"/><path d="M12 21v-8"/></svg>`,
+  hospital:   `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>`,
+  assembly:   `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h20"/><path d="M4 20V10l8-7 8 7v10"/><rect x="9" y="14" width="6" height="6"/></svg>`,
+  // Exit point: arrow-out-of-box icon in amber to distinguish from real shelters
+  exit_point: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F39C12" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
 };
 
 // Disaster-type visual palette (matches notification/frontend reference)
@@ -469,17 +471,39 @@ export default function CoordinatorMap({
 
     // ── Shelters & safe zones ────────────────────────────────────────────
     map.getSource('safe-zones')?.setData(wsData?.safe_zones ?? EMPTY_FC);
-    map.getSource('ws-shelters')?.setData(wsData?.shelters_geojson ?? EMPTY_FC);
 
-    // ── Pending shelter DOM markers ──────────────────────────────────────
-    const currentIds = new Set((pendingShelters ?? []).map((s) => s.id));
+    // Filter exit_point shelters out of the ws-shelters circle layer so they don't
+    // show as generic green circles — they're handled as amber DOM markers below.
+    const wsSheltersonGeoJSON = wsData?.shelters_geojson ?? EMPTY_FC;
+    const wsRealShelters = {
+      ...wsSheltersonGeoJSON,
+      features: (wsSheltersonGeoJSON.features ?? []).filter(
+        (f) => f.properties?.shelter_type !== 'exit_point'
+      ),
+    };
+    map.getSource('ws-shelters')?.setData(wsRealShelters);
+
+    // ── Shelter DOM markers: pending (pre-launch) + exit_points (post-launch) ─
+    const exitPointsFromWS = (wsData?.shelters_geojson?.features ?? [])
+      .filter((f) => f.properties?.shelter_type === 'exit_point')
+      .map((f) => ({
+        id:           f.properties.id,
+        name:         f.properties.name,
+        lat:          f.geometry.coordinates[1],
+        lon:          f.geometry.coordinates[0],
+        shelter_type: 'exit_point',
+        capacity:     f.properties.capacity,
+      }));
+
+    const allMarkerShelters = [...(pendingShelters ?? []), ...exitPointsFromWS];
+    const currentIds = new Set(allMarkerShelters.map((s) => s.id));
     for (const id of Object.keys(shelterMarkersRef.current)) {
       if (!currentIds.has(id)) {
         shelterMarkersRef.current[id].remove();
         delete shelterMarkersRef.current[id];
       }
     }
-    for (const s of (pendingShelters ?? [])) {
+    for (const s of allMarkerShelters) {
       if (!shelterMarkersRef.current[s.id]) {
         shelterMarkersRef.current[s.id] = _makeShelterMarker(map, s);
       }
@@ -508,14 +532,17 @@ export default function CoordinatorMap({
 // ── Module-level helpers ────────────────────────────────────────────────────
 
 function _makeShelterMarker(map, shelter) {
+  const isExit = shelter.shelter_type === 'exit_point' || shelter.id?.startsWith('exit-');
   const iconSvg = SHELTER_SVG[shelter.shelter_type] ?? SHELTER_SVG.shelter;
+  const color = isExit ? '#F39C12' : '#1abc9c';
+  const borderColor = isExit ? 'rgba(243,156,18,0.4)' : 'rgba(26,188,156,0.4)';
   const el = document.createElement('div');
   Object.assign(el.style, { display: 'flex', flexDirection: 'column', alignItems: 'center' });
   el.innerHTML = `
     <div style="filter:drop-shadow(0 2px 6px rgba(0,0,0,0.9))">${iconSvg}</div>
-    <div style="background:rgba(10,15,30,0.9);color:#1abc9c;font-size:10px;font-weight:700;
+    <div style="background:rgba(10,15,30,0.9);color:${color};font-size:${isExit ? '9px' : '10px'};font-weight:700;
       padding:2px 6px;border-radius:4px;margin-top:2px;white-space:nowrap;
-      border:1px solid rgba(26,188,156,0.4);letter-spacing:0.04em;">
+      border:1px solid ${borderColor};letter-spacing:0.04em;opacity:${isExit ? '0.85' : '1'};">
       ${shelter.name}
     </div>
   `;
