@@ -110,6 +110,32 @@ export default function Coordinator() {
   const stats       = wsData?.statistics  || {};
   const totalCit    = (wsData?.citizens?.features || []).length;
 
+  // Live shelter data from backend (post-launch)
+  const liveShelters = (wsData?.safe_zones?.features || [])
+    .filter((f) => !f.properties?.id?.startsWith('exit-'))
+    .map((f) => ({
+      id:          f.properties.id,
+      name:        f.properties.name,
+      capacity:    f.properties.capacity,
+      utilisation: f.properties.utilisation,
+    }));
+
+  // Pre-launch: show preset/pending shelters with 0% occupancy so the section
+  // is always visible rather than empty until simulation starts.
+  const shelterPreview = pendingShelters
+    .filter((s) => s.shelter_type !== 'exit_point' && !s.id?.startsWith('exit-'))
+    .map((s) => ({ ...s, utilisation: 0 }));
+
+  const sheltersForStats = liveShelters.length > 0 ? liveShelters : shelterPreview;
+
+  // The effective zone polygon: drawn draft or echoed back from backend
+  const effectiveZone = zonePolygon || scenario.zone_polygon || null;
+
+  const PANEL_STYLE = {
+    scrollbarWidth: 'thin',
+    scrollbarColor: 'rgba(255,255,255,0.1) transparent',
+  };
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0a0f1e]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
 
@@ -127,27 +153,72 @@ export default function Coordinator() {
         />
       </MapErrorBoundary>
 
-      {/* Connection badge */}
-      <div className="absolute top-4 left-4 z-20 flex items-center gap-1.5 bg-[#0d1424]/90 backdrop-blur-sm rounded-full px-3 py-1.5 border border-white/[0.08] shadow">
-        <span className={`w-2 h-2 rounded-full ${connected ? 'bg-[#1abc9c] animate-pulse' : 'bg-[#c0392b]'}`} />
-        <span className="text-[11px] text-[#a0a0a0] font-medium">{connected ? 'Live' : 'Reconnecting…'}</span>
+      {/* ── Single right panel — controls + statistics ─────────────────────── */}
+      <div
+        className="absolute top-4 right-4 bottom-4 z-20 w-[400px] flex flex-col overflow-hidden rounded-2xl bg-[#0d1424]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl"
+        style={PANEL_STYLE}
+      >
+        {/* ── Panel header ── */}
+        <div className="shrink-0 flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06]">
+          <h1 className="text-[#f0f0f0] font-extrabold text-lg tracking-tight">
+            Route<span style={{ color: '#1abc9c' }}>Out</span>
+          </h1>
+          <div className="flex items-center gap-3">
+            {scenario.active && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#c0392b] animate-pulse" />
+                <span className="text-[10px] text-[#f0f0f0] font-semibold tabular-nums capitalize">
+                  {scenario.disaster_type} · T+{Math.round(scenario.elapsed_minutes ?? 0)}m
+                </span>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${connected ? 'bg-[#1abc9c] animate-pulse' : 'bg-[#c0392b]'}`} />
+              <span className="text-[10px] text-[#a0a0a0] font-medium">{connected ? 'Live' : 'Offline'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Scrollable body ── */}
+        <div className="flex-1 overflow-y-auto px-4 pb-4" style={PANEL_STYLE}>
+          {/* Controls */}
+          <div className="pt-3">
+            <ControlPanel
+              simulationActive={scenario.active}
+              notifOnline={wsData?.notification_service_online ?? false}
+              drawMode={drawMode}
+              onDrawModeChange={setDrawMode}
+              pendingShelters={pendingShelters}
+              zonePolygon={zonePolygon}
+              onClearDraft={handleClearDraft}
+              onError={setError}
+              onSheltersLoaded={handleSheltersLoaded}
+            />
+          </div>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 my-4">
+            <div className="flex-1 border-t border-white/[0.06]" />
+            <span className="text-[#a0a0a0] text-[9px] uppercase tracking-[0.18em] font-bold shrink-0">Live Statistics</span>
+            <div className="flex-1 border-t border-white/[0.06]" />
+          </div>
+
+          {/* Statistics */}
+          <Statistics
+            stats={stats}
+            total={totalCit}
+            active={scenario.active}
+            zonePolygon={effectiveZone}
+            shelters={sheltersForStats}
+            timeAvailable={scenario.time_available || 30}
+          />
+        </div>
       </div>
 
-      {/* Sim time badge — visible when active */}
-      {scenario.active && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 bg-[#0d1424]/95 backdrop-blur-sm rounded-full px-4 py-1.5 border border-white/[0.08] shadow">
-          <span className="w-2 h-2 rounded-full bg-[#c0392b] animate-pulse" />
-          <span className="text-[11px] text-[#f0f0f0] font-semibold tabular-nums">
-            T+{Math.round(scenario.elapsed_minutes ?? 0)} min
-          </span>
-          <span className="text-[#a0a0a0] text-xs">·</span>
-          <span className="text-[11px] text-[#a0a0a0] capitalize">{scenario.disaster_type}</span>
-        </div>
-      )}
-
-      {/* Draw mode hint */}
+      {/* Draw mode hint — floats above map, left-of-panel center */}
       {drawMode && !scenario.active && (
-        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-20 bg-[#0d1424]/95 backdrop-blur-sm rounded-full px-4 py-1.5 border border-[#1abc9c]/30 shadow pointer-events-none">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-[#0d1424]/95 backdrop-blur-sm rounded-full px-4 py-1.5 border border-[#1abc9c]/30 shadow pointer-events-none"
+          style={{ marginRight: '200px' }}>
           <span className="text-[11px] text-[#1abc9c] font-medium">
             {drawMode === 'polygon'
               ? 'Click to add vertices — double-click to finish the zone'
@@ -158,12 +229,13 @@ export default function Coordinator() {
 
       {/* Error toast */}
       {error && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 bg-[#c0392b]/20 border border-[#c0392b]/50 text-[#f0f0f0] text-sm px-4 py-2.5 rounded-xl shadow-lg max-w-sm text-center backdrop-blur-sm">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 bg-[#c0392b]/20 border border-[#c0392b]/50 text-[#f0f0f0] text-sm px-4 py-2.5 rounded-xl shadow-lg max-w-sm text-center backdrop-blur-sm"
+          style={{ marginRight: '200px' }}>
           {error}
         </div>
       )}
 
-      {/* ── Safe zone legend ── */}
+      {/* ── Safe zone capacity legend — bottom-left ── */}
       <div className="absolute bottom-4 left-4 z-20 bg-[#0d1424]/90 backdrop-blur-sm rounded-xl px-3 py-2 border border-white/[0.08] shadow">
         <p className="text-[#a0a0a0] text-[9px] uppercase tracking-[0.18em] mb-1.5 font-bold">Safe Zone Capacity</p>
         <div className="flex flex-col gap-1">
@@ -172,43 +244,12 @@ export default function Coordinator() {
             { color: '#F39C12', label: 'Filling (50–80%)' },
             { color: '#E74C3C', label: 'Near Full (>80%)' },
           ].map(({ color, label }) => (
-            <div key={label} className="flex items-center gap-2">
-              <span style={{ background: color }} className="w-2.5 h-2.5 rounded-full opacity-90 shrink-0" />
-              <span className="text-[#a0a0a0] text-[10px]">{label}</span>
+            <div key={label} className="flex items-center gap-1.5">
+              <span style={{ background: color }} className="w-2 h-2 rounded-full opacity-90 shrink-0" />
+              <span className="text-[#a0a0a0] text-[9px]">{label}</span>
             </div>
           ))}
         </div>
-      </div>
-
-      {/* ── Floating right panel ── */}
-      <div
-        className="absolute top-4 right-4 bottom-4 z-20 w-[360px] flex flex-col gap-3 overflow-y-auto rounded-2xl bg-[#0d1424]/95 backdrop-blur-md border border-white/[0.08] shadow-2xl p-4"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.1) transparent' }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
-          <h1 className="text-[#f0f0f0] font-extrabold text-lg tracking-tight">
-            Route<span style={{ color: '#1abc9c' }}>Out</span>
-          </h1>
-          <span className="text-[#a0a0a0] text-[10px] font-bold uppercase tracking-[0.16em]">Supervisor</span>
-        </div>
-
-        {/* Control panel */}
-        <ControlPanel
-          simulationActive={scenario.active}
-          notifOnline={wsData?.notification_service_online ?? false}
-          drawMode={drawMode}
-          onDrawModeChange={setDrawMode}
-          pendingShelters={pendingShelters}
-          zonePolygon={zonePolygon}
-          onClearDraft={handleClearDraft}
-          onError={setError}
-          onSheltersLoaded={handleSheltersLoaded}
-        />
-
-        {/* Statistics — always show, dims when inactive */}
-        <Statistics stats={stats} total={totalCit} active={scenario.active} />
-
       </div>
 
       {/* Shelter placement dialog */}

@@ -92,13 +92,17 @@ export default function CoordinatorMap({
     map.dragRotate.enable();
     map.touchZoomRotate.enableRotation();
 
-    // Navigation widget — shows tilt/compass UI, makes 3D obvious to judges
+    // Navigation widget — placed bottom-right so sidebars don't cover it
     map.addControl(
       new mapboxgl.NavigationControl({ visualizePitch: true }),
-      'top-right',
+      'bottom-right',
     );
 
     map.on('load', () => {
+      // Tell Mapbox about the single right panel so controls render in the map gap
+      // Right panel: w-400 at right-4 → 416px
+      map.setPadding({ top: 16, right: 420, bottom: 16, left: 16 });
+
       // Animate camera into 3D perspective on first load
       map.easeTo({
         pitch: 45,
