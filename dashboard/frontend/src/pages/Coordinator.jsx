@@ -159,10 +159,32 @@ export default function Coordinator() {
         style={PANEL_STYLE}
       >
         {/* ── Panel header ── */}
-        <div className="shrink-0 flex items-center justify-between px-4 pt-4 pb-3 border-b border-white/[0.06]">
-          <h1 className="text-[#f0f0f0] font-extrabold text-lg tracking-tight">
-            Route<span style={{ color: '#1abc9c' }}>Out</span>
-          </h1>
+        <div className="shrink-0 flex items-center justify-between px-4 pt-3 pb-2.5 border-b border-white/[0.06]">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 160" style={{ height: '68px', width: 'auto' }}>
+            <defs>
+              <filter id="pinGlow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
+                <feFlood floodColor="#00d4aa" floodOpacity="0.28" result="color"/>
+                <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+            <g transform="translate(10, 30)" filter="url(#pinGlow)">
+              <path d="M50 0C32.327 0 18 14.327 18 32C18 50.5 50 92 50 92C50 92 82 50.5 82 32C82 14.327 67.673 0 50 0Z" fill="none" stroke="#00d4aa" strokeWidth="9" opacity="0.1"/>
+              <path d="M50 0C32.327 0 18 14.327 18 32C18 50.5 50 92 50 92C50 92 82 50.5 82 32C82 14.327 67.673 0 50 0Z" fill="#0d1e2d" stroke="#00d4aa" strokeWidth="2.8"/>
+              <circle cx="50" cy="32" r="18.5" fill="none" stroke="#00d4aa" strokeWidth="2.5"/>
+              <circle cx="50" cy="32" r="13.5" fill="#081319"/>
+              <line x1="50" y1="20.5" x2="50" y2="23.5" stroke="#00d4aa" strokeWidth="1.3" opacity="0.5"/>
+              <line x1="50" y1="40.5" x2="50" y2="43.5" stroke="#00d4aa" strokeWidth="1.3" opacity="0.5"/>
+              <line x1="38.5" y1="32" x2="41.5" y2="32" stroke="#00d4aa" strokeWidth="1.3" opacity="0.5"/>
+              <line x1="58.5" y1="32" x2="61.5" y2="32" stroke="#00d4aa" strokeWidth="1.3" opacity="0.5"/>
+              <polygon points="50,20.5 52.8,30.5 50,28.5 47.2,30.5" fill="#00d4aa"/>
+              <polygon points="50,43.5 52.8,33.5 50,35.5 47.2,33.5" fill="#1a7060"/>
+              <circle cx="50" cy="32" r="2.6" fill="#081319" stroke="#00d4aa" strokeWidth="1.2"/>
+            </g>
+            <text x="115" y="103" fontFamily="'Outfit', 'Helvetica Neue', Arial, sans-serif" fontWeight="800" fontSize="86" letterSpacing="-2" fill="#eef2f6">Route<tspan fill="#00d4aa">Out</tspan></text>
+            <text x="118" y="130" fontFamily="'Barlow Condensed', 'Arial Narrow', Arial, sans-serif" fontWeight="600" fontSize="19" letterSpacing="3.2" fill="#00c49a" opacity="0.9">EMERGENCY NAVIGATION SYSTEM</text>
+          </svg>
           <div className="flex items-center gap-3">
             {scenario.active && (
               <div className="flex items-center gap-1.5">
@@ -211,6 +233,7 @@ export default function Coordinator() {
             zonePolygon={effectiveZone}
             shelters={sheltersForStats}
             timeAvailable={scenario.time_available || 30}
+            elapsedMinutes={scenario.elapsed_minutes || 0}
           />
         </div>
       </div>
@@ -235,20 +258,77 @@ export default function Coordinator() {
         </div>
       )}
 
-      {/* ── Safe zone capacity legend — bottom-left ── */}
-      <div className="absolute bottom-4 left-4 z-20 bg-[#0d1424]/90 backdrop-blur-sm rounded-xl px-3 py-2 border border-white/[0.08] shadow">
-        <p className="text-[#a0a0a0] text-[9px] uppercase tracking-[0.18em] mb-1.5 font-bold">Safe Zone Capacity</p>
-        <div className="flex flex-col gap-1">
+      {/* ── Map legend — bottom-left ── */}
+      <div className="absolute bottom-4 left-4 z-20 rounded-2xl px-4 py-3.5" style={{ minWidth: '210px', background: 'linear-gradient(160deg, rgba(10,15,30,0.55) 0%, rgba(8,12,24,0.45) 100%)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', border: '1px solid rgba(255,255,255,0.07)' }}>
+
+        <p className="text-white/80 text-[9px] uppercase tracking-[0.28em] mb-3 font-bold">Legend</p>
+
+        {/* ── SHELTERS ── */}
+        <p className="text-white/45 text-[7.5px] uppercase tracking-[0.18em] mb-2 font-semibold">Shelters</p>
+        <div className="flex flex-col gap-2 mb-3">
           {[
-            { color: '#27AE60', label: 'Available (<50%)' },
-            { color: '#F39C12', label: 'Filling (50–80%)' },
-            { color: '#E74C3C', label: 'Near Full (>80%)' },
-          ].map(({ color, label }) => (
-            <div key={label} className="flex items-center gap-1.5">
-              <span style={{ background: color }} className="w-2 h-2 rounded-full opacity-90 shrink-0" />
-              <span className="text-[#a0a0a0] text-[9px]">{label}</span>
+            { icon: <><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></>, label: 'Hospital', color: '#1abc9c' },
+            { icon: <><path d="M2 20h20"/><path d="M4 20V10l8-7 8 7v10"/><rect x="9" y="14" width="6" height="6"/></>, label: 'Assembly point', color: '#1abc9c' },
+            { icon: <><path d="M1 21L12 3l11 18"/><line x1="1" y1="21" x2="23" y2="21"/><path d="M12 21v-8"/></>, label: 'Shelter', color: '#1abc9c' },
+            { icon: <><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>, label: 'Zone exit point', color: '#F39C12' },
+          ].map(({ icon, label, color }) => (
+            <div key={label} className="flex items-center gap-2.5">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">{icon}</svg>
+              <span className="text-white/75 text-[10px]">{label}</span>
             </div>
           ))}
+        </div>
+
+        {/* Capacity colour key */}
+        <div className="flex flex-col gap-1.5 mb-3">
+          {[
+            { color: '#27AE60', label: 'Available  < 50%' },
+            { color: '#F39C12', label: 'Filling  50 – 80%' },
+            { color: '#E74C3C', label: 'Near full  > 80%' },
+          ].map(({ color, label }) => (
+            <div key={label} className="flex items-center gap-2.5">
+              <span className="shrink-0 w-3.5 h-3.5 rounded-full border-2" style={{ borderColor: color, background: color + '30' }} />
+              <span className="text-white/65 text-[10px]">{label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-white/[0.08] mb-3" />
+
+        {/* ── HAZARD ── */}
+        <p className="text-white/45 text-[7.5px] uppercase tracking-[0.18em] mb-2 font-semibold">Hazard</p>
+        <div className="flex flex-col gap-2 mb-3">
+          <div className="flex items-center gap-2.5">
+            <span className="shrink-0 w-10 h-3.5 rounded" style={{ background: 'linear-gradient(90deg,#7b1a1a,#c0392b)' }} />
+            <span className="text-white/75 text-[10px]">Fire / ash area</span>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className="shrink-0 w-10 h-3.5 rounded" style={{ background: 'linear-gradient(90deg,#FF5722cc,#FF8C00cc)', boxShadow: '0 0 0 1.5px #FFCC0066' }} />
+            <span className="text-white/75 text-[10px]">Active fire front</span>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className="shrink-0 w-10 h-3.5 rounded" style={{ background: '#1a527699' }} />
+            <span className="text-white/75 text-[10px]">Flood / tsunami</span>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <span className="shrink-0 w-10 h-3.5 rounded" style={{ background: '#a2d9ce55' }} />
+            <span className="text-white/75 text-[10px]">Wave leading edge</span>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <svg width="40" height="8" className="shrink-0"><line x1="0" y1="4" x2="40" y2="4" stroke="#E67E22" strokeWidth="2" strokeDasharray="6 3"/></svg>
+            <span className="text-white/75 text-[10px]">Predicted spread</span>
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-white/[0.08] mb-3" />
+
+        {/* ── ZONE ── */}
+        <p className="text-white/45 text-[7.5px] uppercase tracking-[0.18em] mb-2 font-semibold">Zone</p>
+        <div className="flex items-center gap-2.5">
+          <svg width="40" height="8" className="shrink-0"><line x1="0" y1="4" x2="40" y2="4" stroke="#F39C12" strokeWidth="2" strokeDasharray="6 3"/></svg>
+          <span className="text-white/75 text-[10px]">Evacuation zone</span>
         </div>
       </div>
 
