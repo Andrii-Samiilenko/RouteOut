@@ -159,6 +159,33 @@ class AlertForwardPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# LLM hazard analysis result
+# ---------------------------------------------------------------------------
+
+class HazardEvent(BaseModel):
+    hazard_type:       str
+    origin_lat:        float
+    origin_lon:        float
+    wind_direction_deg: float
+    wind_speed_kmh:    float
+    spread_rate:       str   = "high"
+    confidence:        float = 0.0
+    sources_count:     int   = 0
+
+
+class LLMSynthesisResult(BaseModel):
+    provider:    str   = "fallback"
+    confidence:  float = 0.0
+    latency_ms:  float = 0.0
+    spread_rate: str   = "high"
+    origin_lat:  float = 0.0
+    origin_lon:  float = 0.0
+    wind_dir_deg: float = 0.0
+    wind_speed_kmh: float = 0.0
+    sources_count: int = 0
+
+
+# ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
 
@@ -189,3 +216,4 @@ class WebSocketPayload(BaseModel):
     crowd_flow:                Optional[Dict[str, Any]]  = None
     notifications:             List[NotificationCard]    = []
     notification_service_online: bool                    = False
+    llm_synthesis:             Optional[LLMSynthesisResult] = None

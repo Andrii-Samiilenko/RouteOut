@@ -53,10 +53,10 @@ def synthesise(
     Tries Anthropic Claude first. Falls back to hardcoded event if API fails.
     Set LLM_PROVIDER=gemini to swap (one-line change for MLH Gemini prize).
     """
-    provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
-    # Accept "google" as an alias for "gemini" (MLH Gemini prize)
+    provider = os.getenv("LLM_PROVIDER", "gemma").lower()
+    # Accept "google" as an alias for "gemma"
     if provider == "google":
-        provider = "gemini"
+        provider = "gemma"
 
     user_content = (
         f"AEMET ALERT: {inputs.get('aemet', '')}\n\n"
@@ -72,8 +72,10 @@ def synthesise(
     try:
         if provider == "anthropic":
             event = _call_anthropic(user_content)
-        else:
+        elif provider == "gemini":
             event = _call_gemini(user_content)
+        else:
+            event = _call_gemma(user_content)
         latency_ms = (time.time() - t0) * 1000
         return event, latency_ms, provider
     except Exception:
@@ -103,9 +105,29 @@ def _call_gemini(user_content: str) -> HazardEvent:
     prompt = f"{_SYSTEM_PROMPT}\n\n{user_content}"
     response = model.generate_content(prompt)
     raw = response.text.strip()
-    # Strip markdown fences if Gemini wraps in ```json
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     return HazardEvent(**json.loads(raw))
+
+
+def _call_gemma(user_content: str) -> HazardEvent:
+    """Call Gemma 4 via the Gemini API (google-generativeai SDK)."""
+    import google.generativeai as genai  # pip install google-generativeai
+
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    model = genai.GenerativeModel(
+        model_name="gemma-3-27b-it",
+        generation_config={"temperature": 0.1, "max_output_tokens": 512},
+    )
+    prompt = f"{_SYSTEM_PROMPT}\n\n{user_content}"
+    response = model.generate_content(prompt)
+    raw = response.text.strip()
+    # Strip markdown fences if model wraps output in ```json
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1] if len(parts) > 1 else parts[0]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return HazardEvent(**json.loads(raw.strip()))

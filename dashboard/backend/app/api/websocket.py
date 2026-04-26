@@ -98,6 +98,7 @@ def _build_payload(engine: Any) -> str:
         predicted_zone=engine.predicted_polygon,
         notifications=engine.get_notifications(),
         notification_service_online=engine.notification_service_online,
+        llm_synthesis=getattr(engine, "llm_synthesis", None),
     )
     return payload.model_dump_json()
 

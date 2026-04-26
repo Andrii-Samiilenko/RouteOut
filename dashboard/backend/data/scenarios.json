@@ -22,7 +22,7 @@
       "origin_lat": 41.4380,
       "origin_lon": 2.1050,
       "wind_direction_deg": 315,
-      "wind_speed_kmh": 2500,
+      "wind_speed_kmh": 25,
       "spread_rate": "high",
       "confidence": 0.91,
       "sources_count": 3

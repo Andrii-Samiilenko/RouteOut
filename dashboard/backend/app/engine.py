@@ -79,6 +79,9 @@ class SimulationEngine:
         # ── Background simulation task handle ────────────────────────────────
         self._sim_task: Optional[Any] = None
 
+        # ── LLM synthesis result (set at launch) ─────────────────────────────
+        self.llm_synthesis: Optional[Any] = None
+
     # ------------------------------------------------------------------
     # Scenario lifecycle
     # ------------------------------------------------------------------
@@ -136,6 +139,7 @@ class SimulationEngine:
         self.flood_model = None
         self.tsunami_model = None
         self.notification_service_online = False
+        self.llm_synthesis = None
         if self._sim_task and not self._sim_task.done():
             self._sim_task.cancel()
         self._sim_task = None

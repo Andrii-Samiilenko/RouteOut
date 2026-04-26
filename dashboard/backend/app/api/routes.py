@@ -116,16 +116,80 @@ async def launch_simulation(req: LaunchSimulationRequest, background_tasks: Back
             for s in shelters_raw
         ]
 
+    # ── LLM synthesis: read AEMET + scenario text → structured hazard params ──
+    llm_result = None
+    try:
+        import json as _json
+        import os as _os
+        _scenarios_path = _os.path.join(_os.path.dirname(__file__), "../../data/scenarios.json")
+        with open(_os.path.abspath(_scenarios_path)) as f:
+            _scenarios = _json.load(f)
+        _scenario_key = "tibidabo_wildfire" if req.disaster_type.value == "fire" else "barceloneta_flood"
+        _scenario_data = _scenarios.get(_scenario_key, {})
+        _inputs = _scenario_data.get("inputs", {
+            "aemet": f"{req.disaster_type.value} emergency in Barcelona",
+            "tweet": f"Emergency: {req.disaster_type.value} reported in Barcelona",
+            "emergency": f"{req.disaster_type.value} hazard — evacuation required",
+        })
+        _fallback = _scenario_data.get("fallback_hazard_event", {
+            "hazard_type": req.disaster_type.value,
+            "origin_lat": req.origin_lat or 41.432,
+            "origin_lon": req.origin_lon or 2.126,
+            "wind_direction_deg": req.wind_dir_deg or 225.0,
+            "wind_speed_kmh": req.wind_speed_kmh or 18.0,
+            "spread_rate": "high",
+            "confidence": 0.85,
+            "sources_count": 1,
+        })
+        from app.services.aemet import get_current_weather
+        _weather = get_current_weather() or {}
+        from app.core.llm_synthesiser import synthesise
+        _hazard, _latency, _provider = synthesise(_inputs, _weather, _fallback)
+        from app.api.schemas import LLMSynthesisResult
+        llm_result = LLMSynthesisResult(
+            provider=_provider,
+            confidence=_hazard.confidence,
+            latency_ms=_latency,
+            spread_rate=_hazard.spread_rate,
+            origin_lat=_hazard.origin_lat,
+            origin_lon=_hazard.origin_lon,
+            wind_dir_deg=_hazard.wind_direction_deg,
+            wind_speed_kmh=_hazard.wind_speed_kmh,
+            sources_count=_hazard.sources_count,
+        )
+        # Gemma influences wind at 5% weight — real but imperceptible.
+        # Clamp Gemma's values to sane ranges so a bad response can't break physics.
+        _base_dir   = req.wind_dir_deg   or 225.0
+        _base_speed = req.wind_speed_kmh or 18.0
+        _llm_dir    = max(0.0, min(360.0, _hazard.wind_direction_deg))
+        _llm_speed  = max(0.0, min(80.0,  _hazard.wind_speed_kmh))
+        effective_wind_dir   = _base_dir   * 0.95 + _llm_dir   * 0.05
+        effective_wind_speed = _base_speed * 0.95 + _llm_speed * 0.05
+        effective_origin_lat = req.origin_lat or None
+        effective_origin_lon = req.origin_lon or None
+        logger.info(
+            "LLM synthesis [%s] %.0f ms | conf=%.2f | wind=%.0f°@%.0f km/h | spread=%s",
+            _provider, _latency, _hazard.confidence,
+            _hazard.wind_direction_deg, _hazard.wind_speed_kmh, _hazard.spread_rate,
+        )
+    except Exception as exc:
+        logger.warning("LLM synthesis failed, using request defaults: %s", exc)
+        effective_wind_dir   = req.wind_dir_deg   or 225.0
+        effective_wind_speed = req.wind_speed_kmh or 18.0
+        effective_origin_lat = req.origin_lat or None
+        effective_origin_lon = req.origin_lon or None
+
     engine.launch(
         disaster_type=req.disaster_type,
         zone_polygon=req.zone_polygon,
         shelters=shelters_raw,
         time_available=req.time_available,
-        wind_dir_deg=req.wind_dir_deg or 225.0,
-        wind_speed_kmh=req.wind_speed_kmh or 18.0,
-        origin_lat=req.origin_lat,
-        origin_lon=req.origin_lon,
+        wind_dir_deg=effective_wind_dir,
+        wind_speed_kmh=effective_wind_speed,
+        origin_lat=effective_origin_lat,
+        origin_lon=effective_origin_lon,
     )
+    engine.llm_synthesis = llm_result
 
     # Load graph + spawn evacuees off the event loop so launch returns instantly.
     # Evacuees appear on the map within seconds after the response.

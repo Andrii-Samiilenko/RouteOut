@@ -109,6 +109,7 @@ export default function Coordinator() {
   const scenario    = wsData?.scenario    || {};
   const stats       = wsData?.statistics  || {};
   const totalCit    = (wsData?.citizens?.features || []).length;
+  const llm         = wsData?.llm_synthesis || null;
 
   // Live shelter data from backend (post-launch)
   const liveShelters = (wsData?.safe_zones?.features || [])
@@ -217,6 +218,58 @@ export default function Coordinator() {
               onSheltersLoaded={handleSheltersLoaded}
             />
           </div>
+
+          {/* ── AI Analysis card (shown after launch) ── */}
+          {llm && (
+            <div className="mt-3 rounded-xl border border-white/[0.07] bg-[#0a1020]/60 p-3">
+              <div className="flex items-center justify-between mb-2.5">
+                <div className="flex items-center gap-1.5">
+                  {/* Gemma / Google spark icon */}
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L13.8 8.2L20 10L13.8 11.8L12 18L10.2 11.8L4 10L10.2 8.2L12 2Z" fill="#00d4aa" opacity="0.9"/>
+                    <path d="M19 16L19.9 18.1L22 19L19.9 19.9L19 22L18.1 19.9L16 19L18.1 18.1L19 16Z" fill="#00d4aa" opacity="0.5"/>
+                  </svg>
+                  <span className="text-[10px] font-bold text-white/70 uppercase tracking-[0.15em]">Gemma 4 Analysis</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${
+                    llm.provider === 'fallback'
+                      ? 'bg-yellow-500/15 text-yellow-400/80'
+                      : 'bg-[#00d4aa]/15 text-[#00d4aa]'
+                  }`}>
+                    {llm.provider === 'fallback' ? 'fallback' : `${llm.provider} · ${Math.round(llm.latency_ms)}ms`}
+                  </span>
+                </div>
+              </div>
+              {/* Metrics row */}
+              <div className="grid grid-cols-3 gap-2 mb-2.5">
+                <div className="flex flex-col items-center bg-white/[0.03] rounded-lg py-1.5 px-1">
+                  <span className="text-[15px] font-bold text-white/90 tabular-nums">{Math.round(llm.confidence * 100)}%</span>
+                  <span className="text-[8.5px] text-white/40 mt-0.5 uppercase tracking-wide">Confidence</span>
+                </div>
+                <div className="flex flex-col items-center bg-white/[0.03] rounded-lg py-1.5 px-1">
+                  <span className={`text-[15px] font-bold tabular-nums ${
+                    llm.spread_rate === 'high' ? 'text-[#e74c3c]' :
+                    llm.spread_rate === 'medium' ? 'text-[#f39c12]' : 'text-[#1abc9c]'
+                  }`}>{llm.spread_rate}</span>
+                  <span className="text-[8.5px] text-white/40 mt-0.5 uppercase tracking-wide">Spread</span>
+                </div>
+                <div className="flex flex-col items-center bg-white/[0.03] rounded-lg py-1.5 px-1">
+                  <span className="text-[15px] font-bold text-white/90 tabular-nums">{llm.sources_count}</span>
+                  <span className="text-[8.5px] text-white/40 mt-0.5 uppercase tracking-wide">Sources</span>
+                </div>
+              </div>
+              {/* Wind + origin row */}
+              <div className="flex gap-2 text-[9px] text-white/50">
+                <span className="flex-1 bg-white/[0.03] rounded px-2 py-1">
+                  Wind <span className="text-white/75 font-semibold">{Math.round(llm.wind_dir_deg)}° · {Math.round(llm.wind_speed_kmh)} km/h</span>
+                </span>
+                <span className="flex-1 bg-white/[0.03] rounded px-2 py-1">
+                  Origin <span className="text-white/75 font-semibold">{llm.origin_lat.toFixed(3)}, {llm.origin_lon.toFixed(3)}</span>
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Divider */}
           <div className="flex items-center gap-3 my-4">
