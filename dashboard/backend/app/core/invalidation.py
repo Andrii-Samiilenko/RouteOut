@@ -26,8 +26,8 @@ from app.core import pathfinder, safe_zones as sz_selector
 logger = logging.getLogger(__name__)
 
 TICK_INTERVAL = int(os.getenv("TICK_INTERVAL_SECONDS", "1"))  # 1s wall-clock per tick
-TICK_SIM_MINUTES = 40.0      # simulated minutes per real-world tick
-TICK_ADVANCE_M = 3000.0      # evacuees move 3000 m per tick
+TICK_SIM_MINUTES = 8.0       # simulated minutes per real-world tick (5× slower for stats)
+TICK_ADVANCE_M = 600.0       # evacuees move 600 m per tick (scaled with sim minutes)
 
 
 async def run_simulation_loop(engine: Any) -> None:

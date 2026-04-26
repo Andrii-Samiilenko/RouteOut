@@ -254,8 +254,15 @@ function initOrUpdateMap(payload, accentColor) {
   // Set a default Barcelona-area view while we wait for location.
   map.setView([41.385, 2.173], 13);
 
-  setRouteStatus('Locating you…', 'warn');
-  fetchAndDrawRoute(payload, accentColor);
+  // Safari blocks geolocation unless triggered by a user gesture — detect and prompt.
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  if (isSafari) {
+    setRouteStatus('Tap "Get Route" to share your location', 'warn');
+    getRouteBtn.classList.add('visible');
+  } else {
+    setRouteStatus('Locating you…', 'warn');
+    fetchAndDrawRoute(payload, accentColor);
+  }
 }
 
 // ── Geolocation + route ────────────────────────────────────────────────────

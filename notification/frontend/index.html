@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0f1e" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -13,7 +13,7 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@700;800&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet" />
 
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -127,19 +127,21 @@
       padding-bottom: 20px;
     }
 
-    /* ── On mobile: frame fills the viewport ── */
-    @media (max-width: 430px) {
+    /* ── On real mobile devices: frame fills the viewport, hide fake chrome ── */
+    @media (max-width: 430px), (pointer: coarse) and (max-width: 600px) {
       #phone-frame {
         border-radius: 0;
         border: none;
         box-shadow: none;
         width: 100vw;
-        height: 100vh;
+        height: 100svh; /* svh respects iOS safe areas */
         max-width: none;
       }
       #phone-notch { display: none; }
       #phone-home  { display: none; }
       body::before { display: none; }
+      #stage { background: none; padding: 0; }
+      #phone-content { padding-top: max(env(safe-area-inset-top, 0px), 16px) !important; padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px) !important; }
     }
 
     /* ── Standby / idle screen ── */
@@ -253,7 +255,7 @@
       flex-shrink: 0;
     }
 
-    #agency-bar svg { opacity: 0.7; flex-shrink: 0; }
+    #agency-bar svg { opacity: 1; flex-shrink: 0; }
 
     .agency-text {
       flex: 1;
@@ -611,17 +613,24 @@
 
           <!-- Agency bar -->
           <div id="agency-bar">
-            <!-- Signal icon -->
-            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="2" y="13" width="3" height="5" rx="1" fill="#f0f0f0" opacity="0.9"/>
-              <rect x="7" y="9" width="3" height="9" rx="1" fill="#f0f0f0" opacity="0.9"/>
-              <rect x="12" y="5" width="3" height="13" rx="1" fill="#f0f0f0" opacity="0.9"/>
-              <rect x="17" y="2" width="3" height="16" rx="1" fill="#f0f0f0" opacity="0.9"/>
+            <!-- RouteOut compact logo -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 44" width="200" height="55" style="flex-shrink:0">
+              <defs>
+                <filter id="n-glow-bar" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="2" result="blur"/>
+                  <feFlood flood-color="#00d4aa" flood-opacity="0.5" result="color"/>
+                  <feComposite in="color" in2="blur" operator="in" result="glow"/>
+                  <feMerge><feMergeNode in="glow"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              <g transform="translate(2,2)" filter="url(#n-glow-bar)">
+                <path d="M12 0C7.6 0 4 3.6 4 8c0 6 8 14.5 8 14.5S20 14 20 8C20 3.6 16.4 0 12 0z" fill="#00d4aa"/>
+                <circle cx="12" cy="8" r="3.5" fill="#0a0f1e"/>
+              </g>
+              <text x="28" y="22" font-family="Outfit, sans-serif" font-weight="800" font-size="19" fill="#f0f0f0" letter-spacing="-0.3">Route</text>
+              <text x="84" y="22" font-family="Outfit, sans-serif" font-weight="800" font-size="19" fill="#00d4aa" letter-spacing="-0.3">Out</text>
+
             </svg>
-            <div class="agency-text">
-              <div class="agency-name">RouteOut</div>
-              <div class="agency-label">Official Emergency Alert</div>
-            </div>
             <div id="alert-time">--:--:--</div>
           </div>
 
